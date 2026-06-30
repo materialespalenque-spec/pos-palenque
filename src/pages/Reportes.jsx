@@ -241,6 +241,7 @@ export default function Reportes() {
             { id: 'dia',        label: '📅 Por día' },
             { id: 'pagos',      label: '💳 Por método de pago' },
             { id: 'resultados', label: '📈 Estado de Resultados' },
+            { id: 'anual',      label: '📊 Comparativo Anual' },
           ].map(tab => (
             <button key={tab.id} onClick={() => setVista(tab.id)} style={{
               padding: '8px 16px', borderRadius: '8px', fontSize: '13px',
@@ -342,6 +343,9 @@ export default function Reportes() {
         {vista === 'resultados' && (
           <EstadoResultados desde={desde} hasta={hasta} />
         )}
+        {vista === 'anual' && (
+  <ComparativoAnual />
+)}
       </>}
     </div>
   )
@@ -417,6 +421,99 @@ function EstadoResultados({ desde, hasta }) {
             <td style={{ ...td, textAlign: 'right', fontWeight: '700', color: margenTotal >= 0 ? '#534AB7' : '#e53e3e' }}>{margenTotal.toFixed(1)}%</td>
           </tr>
         </tfoot>
+      </table>
+    </div>
+  )
+}
+
+function ComparativoAnual() {
+  const [datos, setDatos] = useState(null)
+  const [cargando, setCargando] = useState(true)
+
+  useEffect(() => {
+    async function cargar() {
+      setCargando(true)
+      const { data, error } = await supabase
+        .from('sicar_utilidades')
+        .select('mes, ventas, compras, utilidad')
+        .order('mes', { ascending: true })
+
+      if (error || !data) { setCargando(false); return }
+
+      const porAño = {}
+      data.forEach(d => {
+        const año = d.mes.split('-')[0]
+        if (!porAño[año]) porAño[año] = { ventas: 0, compras: 0, utilidad: 0 }
+        porAño[año].ventas   += Number(d.ventas || 0)
+        porAño[año].compras  += Number(d.compras || 0)
+        porAño[año].utilidad += Number(d.utilidad || 0)
+      })
+
+      const años = Object.entries(porAño)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([año, d], i, arr) => {
+          const anterior = i > 0 ? arr[i - 1][1].ventas : null
+          const crecimiento = anterior && anterior > 0
+            ? ((d.ventas - anterior) / anterior * 100)
+            : null
+          return {
+            año,
+            ventas:   d.ventas,
+            compras:  d.compras,
+            utilidad: d.utilidad,
+            margen:   d.ventas > 0 ? (d.utilidad / d.ventas * 100) : 0,
+            crecimiento,
+          }
+        })
+
+      setDatos(años)
+      setCargando(false)
+    }
+    cargar()
+  }, [])
+
+  if (cargando) return <p style={{ color: '#888' }}>Cargando comparativo anual...</p>
+  if (!datos || datos.length === 0) return <p style={{ color: '#888' }}>Sin datos. Carga el reporte de utilidades de SICAR primero.</p>
+
+  return (
+    <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', overflow: 'hidden' }}>
+      <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid #e0e0e0' }}>
+        <h3 style={{ margin: 0, fontSize: '15px', color: '#1a1a2e' }}>Comparativo Anual de Ventas</h3>
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ background: '#f9f9f9' }}>
+            <th style={th}>Año</th>
+            <th style={{ ...th, textAlign: 'right' }}>Ventas</th>
+            <th style={{ ...th, textAlign: 'right' }}>Costo</th>
+            <th style={{ ...th, textAlign: 'right' }}>Utilidad</th>
+            <th style={{ ...th, textAlign: 'right' }}>Margen</th>
+            <th style={{ ...th, textAlign: 'right' }}>vs año anterior</th>
+          </tr>
+        </thead>
+        <tbody>
+          {datos.map(d => (
+            <tr key={d.año} style={{ borderTop: '1px solid #f0f0f0' }}>
+              <td style={{ ...td, fontWeight: '600' }}>{d.año}</td>
+              <td style={{ ...td, textAlign: 'right' }}>{fmt(d.ventas)}</td>
+              <td style={{ ...td, textAlign: 'right', color: '#e53e3e' }}>{fmt(d.compras)}</td>
+              <td style={{ ...td, textAlign: 'right', fontWeight: '600', color: '#1D9E75' }}>{fmt(d.utilidad)}</td>
+              <td style={{ ...td, textAlign: 'right', color: '#534AB7' }}>{d.margen.toFixed(1)}%</td>
+              <td style={{ ...td, textAlign: 'right' }}>
+                {d.crecimiento === null ? (
+                  <span style={{ color: '#aaa' }}>—</span>
+                ) : (
+                  <span style={{
+                    color: d.crecimiento >= 0 ? '#1D9E75' : '#e53e3e',
+                    fontWeight: '600'
+                  }}>
+                    {d.crecimiento >= 0 ? '▲' : '▼'} {Math.abs(d.crecimiento).toFixed(1)}%
+                  </span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
       </table>
     </div>
   )
