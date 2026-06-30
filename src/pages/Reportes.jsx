@@ -28,6 +28,8 @@ export default function Reportes() {
   const [desde, setDesde]       = useState(primerDiaMes())
   const [hasta, setHasta]       = useState(hoy)
   const [datos, setDatos]       = useState(null)
+  const [porDiaSicar, setPorDiaSicar] = useState(null)
+  const [resumenSicar, setResumenSicar] = useState(null)
   const [cargando, setCargando] = useState(false)
   const [vista, setVista]       = useState('dia')
 
@@ -71,14 +73,6 @@ export default function Reportes() {
     const total       = completadas.reduce((s, v) => s + Number(v.total), 0)
     const promedio    = completadas.length > 0 ? total / completadas.length : 0
 
-    const porDia = {}
-    completadas.forEach(v => {
-      const dia = v.created_at?.split('T')[0] || 'Sin fecha'
-      if (!porDia[dia]) porDia[dia] = { count: 0, total: 0 }
-      porDia[dia].count++
-      porDia[dia].total += Number(v.total)
-    })
-
     const porMetodo = {}
     pagos.forEach(p => {
       if (!porMetodo[p.metodo]) porMetodo[p.metodo] = 0
@@ -90,16 +84,60 @@ export default function Reportes() {
       total_canceladas: canceladas.length,
       monto_total:      total,
       ticket_promedio:  promedio,
-      por_dia:          Object.entries(porDia).sort((a, b) => b[0].localeCompare(a[0])),
       por_metodo:       porMetodo,
     })
     setCargando(false)
   }
 
-  useEffect(() => { cargarReporte() }, [])
+  async function cargarPorDiaSicar(d = desde, h = hasta) {
+    let registros = []
+    let idx = 0
+    while (true) {
+      const { data, error } = await supabase
+        .from('sicar_ventas_dia')
+        .select('fecha, tickets, ventas, compras, utilidad')
+        .gte('fecha', d)
+        .lte('fecha', h)
+        .order('fecha', { ascending: false })
+        .range(idx, idx + 999)
+      if (error || !data || data.length === 0) break
+      registros = [...registros, ...data]
+      if (data.length < 1000) break
+      idx += 1000
+    }
+    setPorDiaSicar(registros)
+  }
 
-  const setHoy = () => { setDesde(hoy); setHasta(hoy); cargarReporte(hoy, hoy) }
-  const setMes = () => { const d = primerDiaMes(); setDesde(d); setHasta(hoy); cargarReporte(d, hoy) }
+  async function cargarResumenSicar(d = desde, h = hasta) {
+    const { data, error } = await supabase.rpc('reporte_estado_resultados', {
+      fecha_desde: `${d}T00:00:00`,
+      fecha_hasta: `${h}T23:59:59`
+    })
+    if (error || !data) { setResumenSicar(null); return }
+
+    const ventas_total = data.reduce((s, m) => s + Number(m.ventas || 0), 0)
+    const costo_total  = data.reduce((s, m) => s + Number(m.costo || 0), 0)
+    const utilidad      = ventas_total - costo_total
+    const margen        = ventas_total > 0 ? (utilidad / ventas_total * 100) : 0
+
+    setResumenSicar({ ventas: ventas_total, costo: costo_total, utilidad, margen })
+  }
+
+  useEffect(() => {
+    cargarReporte()
+    cargarPorDiaSicar()
+    cargarResumenSicar()
+  }, [])
+
+  const consultarTodo = (d = desde, h = hasta) => {
+    cargarReporte(d, h)
+    cargarPorDiaSicar(d, h)
+    cargarResumenSicar(d, h)
+  }
+
+  const setHoy = () => { setDesde(hoy); setHasta(hoy); consultarTodo(hoy, hoy) }
+  const setMes = () => { const d = primerDiaMes(); setDesde(d); setHasta(hoy); consultarTodo(d, hoy) }
+  const consultar = () => consultarTodo()
 
   const METODOS = {
     efectivo:      { label: 'Efectivo',      color: '#1D9E75' },
@@ -108,6 +146,37 @@ export default function Reportes() {
     credito:       { label: 'Crédito',       color: '#BA7517' },
     otro:          { label: 'Otro',          color: '#888'    },
   }
+
+  // Tarjetas dinámicas según la vista activa
+  const sicarTotales = porDiaSicar && porDiaSicar.length > 0
+    ? {
+        tickets: porDiaSicar.reduce((s, d) => s + d.tickets, 0),
+        ventas:  porDiaSicar.reduce((s, d) => s + Number(d.ventas), 0),
+      }
+    : null
+
+  const tarjetas = vista === 'resultados' && resumenSicar
+    ? [
+        { label: 'Ventas (SICAR)',  valor: fmt(resumenSicar.ventas),   color: '#1D9E75' },
+        { label: 'Costo (SICAR)',   valor: fmt(resumenSicar.costo),    color: '#e53e3e' },
+        { label: 'Utilidad',        valor: fmt(resumenSicar.utilidad), color: '#f97316' },
+        { label: 'Margen',          valor: `${resumenSicar.margen.toFixed(1)}%`, color: '#534AB7' },
+      ]
+    : vista === 'dia' && sicarTotales
+    ? [
+        { label: 'Tickets (SICAR)', valor: sicarTotales.tickets,        color: '#1D9E75' },
+        { label: 'Ventas (SICAR)',  valor: fmt(sicarTotales.ventas),    color: '#f97316' },
+        { label: 'Ticket promedio', valor: fmt(sicarTotales.ventas / (sicarTotales.tickets || 1)), color: '#534AB7' },
+        { label: 'Canceladas',      valor: datos?.total_canceladas ?? 0, color: '#e53e3e' },
+      ]
+    : datos
+    ? [
+        { label: 'Ventas completadas', valor: datos.total_ventas,        color: '#1D9E75' },
+        { label: 'Monto total',        valor: fmt(datos.monto_total),    color: '#f97316' },
+        { label: 'Ticket promedio',    valor: fmt(datos.ticket_promedio), color: '#534AB7' },
+        { label: 'Canceladas',         valor: datos.total_canceladas,    color: '#e53e3e' },
+      ]
+    : []
 
   return (
     <div>
@@ -127,7 +196,7 @@ export default function Reportes() {
           <input type="date" value={hasta} onChange={e => setHasta(e.target.value)}
             style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '14px' }} />
         </div>
-        <button onClick={() => cargarReporte()} style={{
+        <button onClick={consultar} style={{
           padding: '8px 20px', background: '#f97316', color: 'white',
           border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: '600', cursor: 'pointer'
         }}>Consultar</button>
@@ -143,18 +212,13 @@ export default function Reportes() {
 
       {cargando && <p style={{ color: '#888' }}>Cargando reporte...</p>}
 
-      {datos && <>
-        {/* Tarjetas */}
+      {!cargando && tarjetas.length > 0 && <>
+        {/* Tarjetas dinámicas */}
         <div style={{
           display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
           gap: '1rem', marginBottom: '1.25rem'
         }}>
-          {[
-            { label: 'Ventas completadas', valor: datos.total_ventas,        color: '#1D9E75' },
-            { label: 'Monto total',        valor: fmt(datos.monto_total),    color: '#f97316' },
-            { label: 'Ticket promedio',    valor: fmt(datos.ticket_promedio), color: '#534AB7' },
-            { label: 'Canceladas',         valor: datos.total_canceladas,    color: '#e53e3e' },
-          ].map((t, i) => (
+          {tarjetas.map((t, i) => (
             <div key={i} style={{
               background: 'white', borderRadius: '10px', padding: '1.25rem',
               border: '1px solid #e0e0e0', borderTop: `4px solid ${t.color}`
@@ -164,6 +228,12 @@ export default function Reportes() {
             </div>
           ))}
         </div>
+
+        {(vista === 'resultados' || vista === 'dia') && (
+          <p style={{ margin: '-0.75rem 0 1.25rem', fontSize: '12px', color: '#aaa' }}>
+            * Datos tomados del reporte de utilidades de SICAR
+          </p>
+        )}
 
         {/* Tabs */}
         <div style={{ display: 'flex', gap: '8px', marginBottom: '1rem' }}>
@@ -182,23 +252,23 @@ export default function Reportes() {
           ))}
         </div>
 
-        {/* Vista por día */}
-        {vista === 'dia' && (
+        {/* Vista por día — datos exactos de SICAR */}
+        {vista === 'dia' && porDiaSicar && (
           <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: '#f9f9f9' }}>
                   <th style={th}>Fecha</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Tickets</th>
                   <th style={{ ...th, textAlign: 'right' }}>Ventas</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Total</th>
                 </tr>
               </thead>
               <tbody>
-                {datos.por_dia.map(([dia, d]) => (
-                  <tr key={dia} style={{ borderTop: '1px solid #f0f0f0' }}>
-                    <td style={td}>{fmtFecha(dia)}</td>
-                    <td style={{ ...td, textAlign: 'right' }}>{d.count}</td>
-                    <td style={{ ...td, textAlign: 'right', fontWeight: '600', color: '#f97316' }}>{fmt(d.total)}</td>
+                {porDiaSicar.map(d => (
+                  <tr key={d.fecha} style={{ borderTop: '1px solid #f0f0f0' }}>
+                    <td style={td}>{fmtFecha(d.fecha)}</td>
+                    <td style={{ ...td, textAlign: 'right' }}>{d.tickets}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: '600', color: '#f97316' }}>{fmt(d.ventas)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -206,10 +276,10 @@ export default function Reportes() {
                 <tr style={{ background: '#f9f9f9', borderTop: '2px solid #e0e0e0' }}>
                   <td style={{ ...td, fontWeight: '700' }}>Total</td>
                   <td style={{ ...td, textAlign: 'right', fontWeight: '700' }}>
-                    {datos.por_dia.reduce((s, [, d]) => s + d.count, 0)}
+                    {porDiaSicar.reduce((s, d) => s + d.tickets, 0)}
                   </td>
                   <td style={{ ...td, textAlign: 'right', fontWeight: '700', color: '#f97316' }}>
-                    {fmt(datos.por_dia.reduce((s, [, d]) => s + d.total, 0))}
+                    {fmt(porDiaSicar.reduce((s, d) => s + Number(d.ventas), 0))}
                   </td>
                 </tr>
               </tfoot>
@@ -218,7 +288,7 @@ export default function Reportes() {
         )}
 
         {/* Vista por método de pago */}
-        {vista === 'pagos' && (
+        {vista === 'pagos' && datos && (
           <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', overflow: 'hidden' }}>
             <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid #e0e0e0' }}>
               <h3 style={{ margin: 0, fontSize: '15px', color: '#1a1a2e' }}>Desglose por método de pago</h3>
@@ -305,7 +375,7 @@ function EstadoResultados({ desde, hasta }) {
   }, [desde, hasta])
 
   if (cargando) return <p style={{ color: '#888' }}>Calculando estado de resultados...</p>
-  if (!datos || datos.length === 0) return <p style={{ color: '#888' }}>Sin datos para el período.</p>
+  if (!datos || datos.length === 0) return <p style={{ color: '#888' }}>Sin datos para el período. Carga el reporte de utilidades de SICAR primero.</p>
 
   const totalVentas   = datos.reduce((s, d) => s + d.ventas, 0)
   const totalCosto    = datos.reduce((s, d) => s + d.costo, 0)
