@@ -242,6 +242,7 @@ export default function Reportes() {
             { id: 'pagos',      label: '💳 Por método de pago' },
             { id: 'resultados', label: '📈 Estado de Resultados' },
             { id: 'anual',      label: '📊 Comparativo Anual' },
+            { id: 'cargar',     label: '⬆️ Cargar SICAR' },
           ].map(tab => (
             <button key={tab.id} onClick={() => setVista(tab.id)} style={{
               padding: '8px 16px', borderRadius: '8px', fontSize: '13px',
@@ -345,6 +346,9 @@ export default function Reportes() {
         )}
         {vista === 'anual' && (
   <ComparativoAnual />
+)}
+{vista === 'cargar' && (
+  <CargadorSicar />
 )}
       </>}
     </div>
@@ -518,7 +522,193 @@ function ComparativoAnual() {
     </div>
   )
 }
+function CargadorSicar() {
+  const [archivo, setArchivo]     = useState(null)
+  const [cargando, setCargando]   = useState(false)
+  const [progreso, setProgreso]   = useState('')
+  const [resultado, setResultado] = useState(null)
+  const [error, setError]         = useState(null)
 
+  const procesarArchivo = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    setArchivo(file.name)
+    setResultado(null)
+    setError(null)
+  }
+
+  const cargar = async () => {
+    if (!archivo) return
+    setCargando(true)
+    setResultado(null)
+    setError(null)
+
+    try {
+      setProgreso('Leyendo archivo Excel...')
+      const input = document.getElementById('archivo-sicar')
+      const file  = input.files[0]
+      const buffer = await file.arrayBuffer()
+
+      setProgreso('Procesando tickets...')
+      const XLSX = await import('xlsx')
+      const wb   = XLSX.read(buffer, { type: 'array', cellDates: true })
+      const ws   = wb.Sheets[wb.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false })
+
+      const porDia = {}
+      const porMes = {}
+
+      for (const row of rows) {
+        if (!row[0] || row[0].toString().trim() !== 'Tickets') continue
+
+        const fechaRaw = row[4]
+        if (!fechaRaw) continue
+
+let fecha = null
+if (typeof fechaRaw === 'string') {
+  if (/^\d{4}-\d{2}-\d{2}/.test(fechaRaw)) {
+    fecha = fechaRaw.slice(0, 10)
+  } else if (/^\d{2}\/\d{2}\/\d{4}/.test(fechaRaw)) {
+    const [d, m, y] = fechaRaw.split('/')
+    fecha = `${y}-${m}-${d}`
+  }
+}
+if (!fecha) continue
+
+        const mes = fecha.slice(0, 7)
+
+        const limpiar = v => {
+          if (!v) return 0
+          const s = v.toString().replace(/[$,]/g, '').trim()
+          return parseFloat(s) || 0
+        }
+
+        const ventas  = limpiar(row[19])
+        const compras = limpiar(row[24])
+        if (ventas <= 0) continue
+
+        if (!porDia[fecha]) porDia[fecha] = { tickets: 0, ventas: 0, compras: 0 }
+        porDia[fecha].tickets += 1
+        porDia[fecha].ventas  += ventas
+        porDia[fecha].compras += compras
+
+        if (!porMes[mes]) porMes[mes] = { tickets: 0, ventas: 0, compras: 0 }
+        porMes[mes].tickets += 1
+        porMes[mes].ventas  += ventas
+        porMes[mes].compras += compras
+      }
+
+      const diasArray = Object.entries(porDia).map(([fecha, d]) => ({
+        fecha,
+        tickets:  d.tickets,
+        ventas:   Math.round(d.ventas * 100) / 100,
+        compras:  Math.round(d.compras * 100) / 100,
+        utilidad: Math.round((d.ventas - d.compras) * 100) / 100,
+      }))
+
+      const mesesArray = Object.entries(porMes).map(([mes, d]) => ({
+        mes,
+        tickets:  d.tickets,
+        ventas:   Math.round(d.ventas * 100) / 100,
+        compras:  Math.round(d.compras * 100) / 100,
+        utilidad: Math.round((d.ventas - d.compras) * 100) / 100,
+        margen:   d.ventas > 0 ? Math.round((d.ventas - d.compras) / d.ventas * 10000) / 100 : 0,
+      }))
+
+      setProgreso(`Subiendo ${diasArray.length} días y ${mesesArray.length} meses a Supabase...`)
+
+      const { error: e1 } = await supabase.rpc('upsert_sicar_ventas_dia', { datos: diasArray })
+      if (e1) throw new Error(`Error actualizando días: ${e1.message}`)
+
+      const { error: e2 } = await supabase.rpc('upsert_sicar_utilidades', { datos: mesesArray })
+      if (e2) throw new Error(`Error actualizando meses: ${e2.message}`)
+
+      setResultado({
+        dias:   diasArray.length,
+        meses:  mesesArray.length,
+        ventas: mesesArray.reduce((s, m) => s + m.ventas, 0),
+      })
+      setProgreso('')
+
+    } catch (err) {
+      setError(err.message)
+      setProgreso('')
+    } finally {
+      setCargando(false)
+    }
+  }
+
+  return (
+    <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', padding: '1.5rem' }}>
+      <h3 style={{ margin: '0 0 0.5rem', fontSize: '15px', color: '#1a1a2e' }}>
+        Cargar Reporte de Utilidades SICAR
+      </h3>
+      <p style={{ margin: '0 0 1.5rem', fontSize: '13px', color: '#888' }}>
+        Exporta el reporte de utilidades desde SICAR (.xlsx) y cárgalo aquí para actualizar los reportes del POS.
+      </p>
+
+      <div style={{
+        border: '2px dashed #e0e0e0', borderRadius: '10px', padding: '2rem',
+        textAlign: 'center', marginBottom: '1.5rem',
+        background: archivo ? '#f0fdf4' : '#fafafa'
+      }}>
+        <input
+          id="archivo-sicar"
+          type="file"
+          accept=".xlsx,.xls"
+          onChange={procesarArchivo}
+          style={{ display: 'none' }}
+        />
+        <label htmlFor="archivo-sicar" style={{ cursor: 'pointer' }}>
+          <div style={{ fontSize: '32px', marginBottom: '8px' }}>📊</div>
+          <p style={{ margin: '0 0 8px', fontSize: '14px', color: '#333', fontWeight: '600' }}>
+            {archivo || 'Seleccionar archivo Excel de SICAR'}
+          </p>
+          <p style={{ margin: 0, fontSize: '12px', color: '#aaa' }}>
+            {archivo ? '✓ Archivo seleccionado' : 'Haz clic para seleccionar el archivo .xlsx'}
+          </p>
+        </label>
+      </div>
+
+      <button
+        onClick={cargar}
+        disabled={!archivo || cargando}
+        style={{
+          width: '100%', padding: '12px', borderRadius: '8px',
+          background: archivo && !cargando ? '#f97316' : '#e0e0e0',
+          color: archivo && !cargando ? 'white' : '#aaa',
+          border: 'none', fontSize: '15px', fontWeight: '600',
+          cursor: archivo && !cargando ? 'pointer' : 'not-allowed',
+        }}
+      >
+        {cargando ? '⏳ Procesando...' : '⬆️ Cargar y Actualizar Reportes'}
+      </button>
+
+      {progreso && (
+        <div style={{ marginTop: '1rem', padding: '12px', background: '#f0f9ff', borderRadius: '8px' }}>
+          <p style={{ margin: 0, fontSize: '13px', color: '#0C447C' }}>⏳ {progreso}</p>
+        </div>
+      )}
+
+      {resultado && (
+        <div style={{ marginTop: '1rem', padding: '12px', background: '#f0fdf4', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+          <p style={{ margin: '0 0 4px', fontSize: '14px', fontWeight: '600', color: '#1D9E75' }}>
+            ✅ Carga completada exitosamente
+          </p>
+          <p style={{ margin: 0, fontSize: '13px', color: '#555' }}>
+            {resultado.dias} días y {resultado.meses} meses actualizados — Total ventas: {fmt(resultado.ventas)}
+          </p>
+        </div>
+      )}
+
+      {error && (
+        <div style={{ marginTop: '1rem', padding: '12px', background: '#fef2f2', borderRadius: '8px', border: '1px solid #fecaca' }}>
+          <p style={{ margin: 0, fontSize: '13px', color: '#e53e3e' }}>❌ {error}</p>
+        </div>
+      )}
+    </div>
+  )
+}
 const th = {
   padding: '10px 1.25rem', textAlign: 'left',
   fontSize: '12px', color: '#888', fontWeight: '600'
