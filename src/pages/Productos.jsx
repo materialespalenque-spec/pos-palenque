@@ -27,15 +27,9 @@ async function cargar() {
 query = query.eq('activo', true)
 if (busqueda.trim()) {
   const palabras = busqueda.trim().split(/\s+/)
-  if (palabras.length > 1) {
-    // Buscar cada palabra por separado en nombre
-    palabras.forEach(palabra => {
-      query = query.ilike('nombre', `%${palabra}%`)
-    })
-  } else {
-    // Una sola palabra: buscar en nombre, clave y clave alterna
-    query = query.or(`clave.ilike.%${busqueda}%,codigo_barras.ilike.%${busqueda}%,nombre.ilike.%${busqueda}%`)
-  }
+  palabras.forEach(palabra => {
+    query = query.or(`nombre.ilike.%${palabra}%,clave.ilike.%${palabra}%,codigo_barras.ilike.%${palabra}%`)
+  })
 }
 
   const { data, error } = await query
@@ -97,16 +91,17 @@ if (busqueda.trim()) {
               <tr><td colSpan={7} style={{ ...td, textAlign: 'center', color: '#888', padding: '2rem' }}>No se encontraron productos</td></tr>
             ) : (
               productos.map(p => {
-                const costoUnit = p.factor > 1 ? p.costo / p.factor : p.costo
-                const margen = p.precio_venta > 0
-                  ? ((p.precio_venta - costoUnit) / p.precio_venta * 100)
+                const costoUnit   = (p.factor > 1 ? p.costo / p.factor : p.costo) * 1.16
+                const precioVenta = p.precio_venta * 1.16
+                const margen = precioVenta > 0
+                  ? ((precioVenta - costoUnit) / precioVenta * 100)
                   : 0
                 return (
                   <tr key={p.id} style={{ borderTop: '1px solid #f0f0f0' }}>
                     <td style={td}>{p.nombre}</td>
                     <td style={{ ...td, color: '#888', fontSize: '12px' }}>{p.clave || '—'}</td>
                     <td style={{ ...td, color: '#888', fontSize: '12px' }}>{p.codigo_barras || '—'}</td>
-                    <td style={{ ...td, textAlign: 'right', fontWeight: '600', color: '#f97316' }}>{fmt(p.precio_venta)}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: '600', color: '#f97316' }}>{fmt(precioVenta)}</td>
                     <td style={{ ...td, textAlign: 'right', color: '#888' }}>{fmt(costoUnit)}</td>
                     <td style={{ ...td, textAlign: 'right', color: '#888' }}>{p.factor > 1 ? `x${p.factor}` : '—'}</td>
                     <td style={{ ...td, textAlign: 'right', color: margen >= 0 ? '#1D9E75' : '#e53e3e', fontWeight: '600' }}>
