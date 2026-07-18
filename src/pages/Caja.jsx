@@ -93,10 +93,10 @@ export default function Caja() {
     setSeleccionado(-1)
   }
 
-  const actualizarCantidad = (id, cantidad) => {
-    if (cantidad <= 0) { quitarProducto(id); return }
-    setCarrito(prev => prev.map(i => i.id === id ? { ...i, cantidad } : i))
-  }
+const actualizarCantidad = (id, cantidad) => {
+  if (cantidad <= 0) { quitarProducto(id); return }
+  setCarrito(prev => prev.map(i => i.id === id ? { ...i, cantidad } : i))
+}
 
   const actualizarDescuento = (id, descuento) => {
     setCarrito(prev => prev.map(i => i.id === id ? { ...i, descuento: Math.min(descuento, 100) } : i))
@@ -292,23 +292,45 @@ export default function Caja() {
                           <p style={{ margin: 0, fontSize: '13px', fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '300px' }}>{item.nombre}</p>
                           <p style={{ margin: 0, fontSize: '11px', color: '#888' }}>{fmt(item.precio)} c/u</p>
                         </td>
-                        <td style={{ ...td, textAlign: 'center' }}>
-                          <input
-                            ref={el => cantRefs.current[item.id] = el}
-                            type="number" min="0.001" step="0.001"
-                            value={item.cantidad}
-                            onChange={e => actualizarCantidad(item.id, parseFloat(e.target.value) || 0)}
-                            onKeyDown={e => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault()
-                                // Enter en cantidad → volver al buscador
-                                inputRef.current?.focus()
-                              }
+                          <td style={{ ...td, textAlign: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', justifyContent: 'center' }}>
+                            <button onClick={() => {
+                              const nueva = Math.max(0.001, item.cantidad - 1)
+                              actualizarCantidad(item.id, nueva)
+                              if (cantRefs.current[item.id]) cantRefs.current[item.id].value = nueva
                             }}
-                            onFocus={e => e.target.select()}
-                            style={{ width: '75px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px' }}
-                          />
-                        </td>
+                              style={{ width: '24px', height: '24px', borderRadius: '4px', border: '1px solid #ddd', background: '#f5f5f5', cursor: 'pointer', fontSize: '14px', lineHeight: 1, padding: 0 }}>−</button>
+                              <input
+                                ref={el => cantRefs.current[item.id] = el}
+                                type="text"
+                                defaultValue={item.cantidad}
+                                onBlur={e => {
+                                  const val = parseFloat(e.target.value.replace(',', '.'))
+                                  if (!isNaN(val) && val > 0) {
+                                    actualizarCantidad(item.id, val)
+                                  } else {
+                                    e.target.value = item.cantidad
+                                  }
+                                }}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault()
+                                    const val = parseFloat(e.target.value.replace(',', '.'))
+                                    if (!isNaN(val) && val > 0) actualizarCantidad(item.id, val)
+                                    inputRef.current?.focus()
+                                  }
+                                }}
+                                onFocus={e => e.target.select()}
+                                style={{ width: '55px', padding: '4px 4px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px' }}
+                              />
+                              <button onClick={() => {
+                                const nueva = item.cantidad + 1
+                                actualizarCantidad(item.id, nueva)
+                                if (cantRefs.current[item.id]) cantRefs.current[item.id].value = nueva
+                              }}
+                                style={{ width: '24px', height: '24px', borderRadius: '4px', border: '1px solid #ddd', background: '#f5f5f5', cursor: 'pointer', fontSize: '14px', lineHeight: 1, padding: 0 }}>+</button>
+                            </div>
+                          </td>
                         <td style={{ ...td, textAlign: 'center' }}>
                           <input
                             type="number" min="0" max="100" step="1"
