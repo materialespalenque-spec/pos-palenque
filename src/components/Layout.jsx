@@ -88,7 +88,7 @@ export default function Layout({ sesion, pagina, setPagina, children }) {
       </aside>
 
       {/* Contenido principal */}
-      <main style={{ flex: 1, background: '#f5f5f5', overflow: 'auto' }}>
+      <main style={{ flex: 1, background: '#f5f5f5', overflow: 'auto', minWidth: 0 }}>
         {/* Header móvil */}
         <div style={{
           background: '#1a1a2e',
@@ -135,14 +135,16 @@ export default function Layout({ sesion, pagina, setPagina, children }) {
           </div>
         )}
 
-        {/* Página activa */}
-        <div style={{ padding: '1.5rem' }}>
+      {/* Página activa */}
+      <div style={{ padding: pagina === 'caja' ? '0.75rem' : '1.5rem' }}>
+        {pagina !== 'caja' && (
           <h2 style={{ margin: '0 0 1rem', color: '#1a1a2e' }}>
             {menu.find(m => m.id === pagina)?.icono}{' '}
             {menu.find(m => m.id === pagina)?.label}
           </h2>
-          {children}
-        </div>
+        )}
+        {children}
+      </div>
       </main>
     </div>
   )
