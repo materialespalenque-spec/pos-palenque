@@ -45,6 +45,13 @@ export default function Caja() {
   const inputRef  = useRef(null)
   const cantRefs  = useRef({})
   const totalRef  = useRef(null)
+  const [userId, setUserId] = useState(null)
+
+useEffect(() => {
+  supabase.auth.getUser().then(({ data }) => {
+    if (data?.user) setUserId(data.user.id)
+  })
+}, [])
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
@@ -200,6 +207,7 @@ export default function Caja() {
         .insert({
           negocio_id:        NEGOCIO_ID,
           sucursal_id:       SUCURSAL_ID,
+          usuario_id:        userId,
           folio,
           subtotal:          Math.round(subtotalBruto * 100) / 100,
           descuento:         Math.round(descItems * 100) / 100,
@@ -450,14 +458,22 @@ export default function Caja() {
                         <td style={{ ...td, textAlign: 'right' }}>
                           <input
                             type="text"
+                            ref={el => {
+                              if (el && el !== document.activeElement) {
+                                el.value = subtotalItem.toFixed(2)
+                              }
+                            }}
                             defaultValue={subtotalItem.toFixed(2)}
                             onBlur={e => {
                               const val = parseFloat(e.target.value.replace(/[$,]/g, ''))
                               if (!isNaN(val) && val > 0) {
                                 const nuevaCantidad = val / item.precio
                                 actualizarCantidad(item.id, nuevaCantidad)
-                                if (cantRefs.current[item.id]) cantRefs.current[item.id].value = nuevaCantidad.toFixed(3)
-                                e.target.value = val.toFixed(2)
+                                if (cantRefs.current[item.id]) {
+                                  cantRefs.current[item.id].value = Number.isInteger(nuevaCantidad) 
+                                    ? nuevaCantidad 
+                                    : nuevaCantidad.toFixed(3)
+                                }
                               } else {
                                 e.target.value = subtotalItem.toFixed(2)
                               }
@@ -662,7 +678,13 @@ function TicketVenta({ venta, onNueva }) {
         </div>
         <div style={{ borderTop: '1px dashed #ccc', borderBottom: '1px dashed #ccc', padding: '6px 0', margin: '8px 0' }}>
           <p style={{ margin: 0 }}>Folio: <strong>{venta.folio}</strong></p>
-          {venta.contacto && <p style={{ margin: '4px 0 0' }}>Entrega: <strong>{venta.contacto.nombre}</strong></p>}
+          {venta.contacto && (
+          <>
+            <p style={{ margin: '4px 0 0' }}>Entrega: <strong>{venta.contacto.nombre}</strong></p>
+            {venta.contacto.telefono && <p style={{ margin: '2px 0 0' }}>Tel: {venta.contacto.telefono}</p>}
+            {venta.contacto.direccion && <p style={{ margin: '2px 0 0' }}>Dir: {venta.contacto.direccion}</p>}
+          </>
+        )}
         </div>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
           <thead>
