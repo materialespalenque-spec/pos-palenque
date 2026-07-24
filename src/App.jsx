@@ -7,6 +7,7 @@ import Productos from './pages/Productos'
 import Contactos from './pages/Contactos'
 import Clientes from './pages/Clientes'
 import Reportes from './pages/Reportes'
+import Ventas from './pages/Ventas'
 import Configuracion from './pages/Configuracion'
 
 function App() {
@@ -33,6 +34,7 @@ function App() {
     contactos:     <Contactos />,
     clientes:      <Clientes />,
     reportes:      <Reportes />,
+    ventas:        <Ventas />,
     configuracion: <Configuracion />,
   }
 
