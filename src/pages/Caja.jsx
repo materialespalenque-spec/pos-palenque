@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 
-const IVA = 0.16
 const NEGOCIO_ID  = 'b69b5ee8-b22a-426c-8426-cdf758a12b95'
 const SUCURSAL_ID = '8e56bb7a-9041-4741-a468-4ba68a97f163'
 
@@ -34,6 +33,7 @@ export default function Caja() {
   })
   const [mostrarEspera, setMostrarEspera]     = useState(false)
   const [descuentoGlobal, setDescuentoGlobal] = useState(0)
+  const [totalEditable, setTotalEditable]     = useState(false)
   const [metodoPago, setMetodoPago]           = useState('efectivo')
   const [montoPago, setMontoPago]             = useState('')
   const [contacto, setContacto]               = useState(null)
@@ -53,6 +53,11 @@ export default function Caja() {
     localStorage.setItem('pos_carrito', JSON.stringify(carrito))
   }, [carrito])
 
+  // Sincronizar input total
+  useEffect(() => {
+    if (totalRef.current) totalRef.current.value = total.toFixed(2)
+  }, [carrito, descuentoGlobal])
+
   // Buscar productos
   useEffect(() => {
     const timer = setTimeout(async () => {
@@ -61,7 +66,7 @@ export default function Caja() {
       const palabras = busqueda.trim().split(/\s+/)
       let query = supabase
         .from('productos')
-        .select('id, nombre, clave, codigo_barras, precio_venta, costo, factor, activo')
+        .select('id, nombre, clave, codigo_barras, precio_venta, costo, factor, activo, inventario(existencia, sucursal_id)')
         .eq('activo', true)
         .limit(8)
       palabras.forEach(p => {
@@ -90,7 +95,9 @@ export default function Caja() {
   }, [busqContacto])
 
   const agregarProducto = (p) => {
-    const precioConIva = Math.round(p.precio_venta * (1 + IVA) * 100) / 100
+    // Precio neto = precio_venta * 1.16, redondeado
+    const precio = Math.round(p.precio_venta * 1.16 * 100) / 100
+    const existencia = p.inventario?.find(i => i.sucursal_id === SUCURSAL_ID)?.existencia ?? 0
     setCarrito(prev => {
       const existe = prev.find(i => i.id === p.id)
       if (existe) {
@@ -107,14 +114,11 @@ export default function Caja() {
       }, 50)
       return [...prev, {
         id: p.id, nombre: p.nombre, clave: p.clave, clave_alterna: p.codigo_barras,
-        precio: precioConIva, costo: p.costo, factor: p.factor,
+        precio, costo: p.costo, factor: p.factor, existencia,
         cantidad: 1, descuento: 0,
       }]
     })
-    setBusqueda('')
-    setResultados([])
-    setSeleccionado(-1)
-    setMostrarEspera(false)
+    setBusqueda(''); setResultados([]); setSeleccionado(-1); setMostrarEspera(false)
   }
 
   const actualizarCantidad = (id, cantidad) => {
@@ -141,8 +145,7 @@ export default function Caja() {
     const nuevaLista = [...enEspera, nueva]
     setEnEspera(nuevaLista)
     localStorage.setItem('pos_en_espera', JSON.stringify(nuevaLista))
-    setCarrito([])
-    localStorage.removeItem('pos_carrito')
+    setCarrito([]); localStorage.removeItem('pos_carrito')
     setContacto(null); setBusqContacto(''); setDescuentoGlobal(0)
     cantRefs.current = {}
     inputRef.current?.focus()
@@ -179,19 +182,12 @@ export default function Caja() {
     }
   }
 
-  // Cálculos
-  const subtotalConIva = Math.round(carrito.reduce((s, i) => s + i.precio * i.cantidad * (1 - i.descuento / 100), 0) * 100) / 100
-  const descGlobal     = Math.round(subtotalConIva * (descuentoGlobal / 100) * 100) / 100
-  const baseTotal      = subtotalConIva - descGlobal
-  const subtotalSinIva = baseTotal / (1 + IVA)
-  const ivaTotal       = baseTotal - subtotalSinIva
-  const total          = Math.round(baseTotal * 100) / 100
-  const cambio         = Math.max(0, Number(montoPago) - total)
-
-  // Sincronizar input total con estado
-  useEffect(() => {
-    if (totalRef.current) totalRef.current.value = total.toFixed(2)
-  }, [total])
+  // Cálculos — sin IVA desglosado
+  const subtotalBruto = Math.round(carrito.reduce((s, i) => s + i.precio * i.cantidad, 0) * 100) / 100
+  const descItems     = Math.round(carrito.reduce((s, i) => s + i.precio * i.cantidad * (i.descuento / 100), 0) * 100) / 100
+  const subtotal      = Math.round((subtotalBruto - descItems) * 100) / 100
+  const total         = subtotal
+  const cambio        = Math.max(0, Number(montoPago) - total)
 
   const procesarVenta = async () => {
     if (carrito.length === 0) return
@@ -205,9 +201,9 @@ export default function Caja() {
           negocio_id:        NEGOCIO_ID,
           sucursal_id:       SUCURSAL_ID,
           folio,
-          subtotal:          Math.round(subtotalSinIva * 100) / 100,
-          descuento:         Math.round(descGlobal / (1 + IVA) * 100) / 100,
-          iva:               Math.round(ivaTotal * 100) / 100,
+          subtotal:          Math.round(subtotalBruto * 100) / 100,
+          descuento:         Math.round(descItems * 100) / 100,
+          iva:               0,
           total:             Math.round(total * 100) / 100,
           estado:            'completada',
           contacto_id:       contacto?.id || null,
@@ -217,18 +213,17 @@ export default function Caja() {
       if (eVenta) throw new Error(eVenta.message)
 
       const items = carrito.map(i => {
-        const precioSinIva = i.precio / (1 + IVA)
-        const descUnit     = precioSinIva * (i.descuento / 100)
+        const descUnit = i.precio * (i.descuento / 100)
         return {
           venta_id:        venta.id,
           producto_id:     i.id,
           nombre_producto: i.nombre,
           cantidad:        i.cantidad,
-          precio_unitario: Math.round(precioSinIva * 100) / 100,
+          precio_unitario: i.precio,
           costo_unitario:  Math.round((i.costo / (i.factor || 1)) * 100) / 100,
           descuento:       Math.round(descUnit * i.cantidad * 100) / 100,
-          tasa_iva:        IVA,
-          subtotal:        Math.round((precioSinIva - descUnit) * i.cantidad * 100) / 100,
+          tasa_iva:        0,
+          subtotal:        Math.round((i.precio - descUnit) * i.cantidad * 100) / 100,
         }
       })
       const { error: eItems } = await supabase.from('venta_items').insert(items)
@@ -239,7 +234,7 @@ export default function Caja() {
       })
       if (ePago) throw new Error(ePago.message)
 
-      setVentaExitosa({ folio, total, cambio, contacto, items: [...carrito] })
+      setVentaExitosa({ folio, total, cambio, contacto, items: [...carrito], descItems })
       setCarrito([]); localStorage.removeItem('pos_carrito')
       setDescuentoGlobal(0); setMontoPago('')
       setContacto(null); setBusqContacto(''); setMetodoPago('efectivo')
@@ -338,7 +333,7 @@ export default function Caja() {
                     <p style={{ margin: 0, fontSize: '14px', fontWeight: '600', color: '#1a1a2e' }}>{p.nombre}</p>
                     <p style={{ margin: 0, fontSize: '12px', color: '#888' }}>{p.clave}{p.codigo_barras ? ` · ${p.codigo_barras}` : ''}</p>
                   </div>
-                  <p style={{ margin: 0, fontSize: '15px', fontWeight: '700', color: '#f97316' }}>{fmt(Math.round(p.precio_venta * (1 + IVA) * 100) / 100)}</p>
+                  <p style={{ margin: 0, fontSize: '15px', fontWeight: '700', color: '#f97316' }}>{fmt(Math.round(p.precio_venta * 1.16 * 100) / 100)}</p>
                 </div>
               ))}
             </div>
@@ -366,15 +361,17 @@ export default function Caja() {
                 <thead style={{ position: 'sticky', top: 0, background: '#f9f9f9' }}>
                   <tr>
                     <th style={th}>Producto</th>
-                    <th style={{ ...th, textAlign: 'center', width: '140px' }}>Cant.</th>
-                    <th style={{ ...th, textAlign: 'center', width: '80px' }}>Desc%</th>
+                    <th style={{ ...th, textAlign: 'center', width: '110px' }}>Cant.</th>
+                    <th style={{ ...th, textAlign: 'right', width: '70px' }}>Exist.</th>
+                    <th style={{ ...th, textAlign: 'right', width: '100px' }}>Precio</th>
+                    <th style={{ ...th, textAlign: 'center', width: '70px' }}>Desc%</th>
                     <th style={{ ...th, textAlign: 'right', width: '110px' }}>Subtotal</th>
                     <th style={{ ...th, width: '40px' }}></th>
                   </tr>
                 </thead>
                 <tbody>
                   {carrito.map(item => {
-                    const subtotal = Math.round(item.precio * item.cantidad * (1 - item.descuento / 100) * 100) / 100
+                    const subtotalItem = Math.round(item.precio * item.cantidad * (1 - item.descuento / 100) * 100) / 100
                     return (
                       <tr key={item.id} style={{ borderTop: '1px solid #f0f0f0' }}>
                         <td style={td}>
@@ -382,7 +379,6 @@ export default function Caja() {
                           <p style={{ margin: 0, fontSize: '11px', color: '#888' }}>
                             {item.clave && <span style={{ color: '#534AB7', fontWeight: '600' }}>{item.clave}</span>}
                             {item.clave_alterna && item.clave_alterna !== item.clave && <span style={{ color: '#1D9E75', fontWeight: '600' }}> · {item.clave_alterna}</span>}
-                            <span> · {fmt(item.precio)} c/u</span>
                           </p>
                         </td>
                         <td style={{ ...td, textAlign: 'center' }}>
@@ -410,7 +406,7 @@ export default function Caja() {
                                 }
                               }}
                               onFocus={e => e.target.select()}
-                              style={{ width: '55px', padding: '4px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px' }}
+                              style={{ width: '50px', padding: '4px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px' }}
                             />
                             <button onClick={() => {
                               const nueva = parseFloat((item.cantidad + 1).toFixed(3))
@@ -419,18 +415,42 @@ export default function Caja() {
                             }} style={{ width: '24px', height: '24px', borderRadius: '4px', border: '1px solid #ddd', background: '#f5f5f5', cursor: 'pointer', fontSize: '14px', lineHeight: 1, padding: 0 }}>+</button>
                           </div>
                         </td>
+                        <td style={{ ...td, textAlign: 'right', fontSize: '12px', fontWeight: '600',
+                          color: item.existencia <= 0 ? '#e53e3e' : item.existencia < item.cantidad ? '#BA7517' : '#1D9E75' }}>
+                          {item.existencia}
+                        </td>
+                        <td style={{ ...td, textAlign: 'right' }}>
+                          <input
+                            type="text"
+                            defaultValue={item.precio.toFixed(2)}
+                            onBlur={e => {
+                              const val = parseFloat(e.target.value.replace(/[$,]/g, ''))
+                              if (!isNaN(val) && val > 0) {
+                                const descuento = Math.max(0, Math.round((1 - val / item.precio) * 10000) / 100)
+                                actualizarDescuento(item.id, descuento)
+                              } else {
+                                e.target.value = item.precio.toFixed(2)
+                              }
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') { e.preventDefault(); inputRef.current?.focus() }
+                            }}
+                            onFocus={e => e.target.select()}
+                            style={{ width: '85px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'right', fontSize: '13px' }}
+                          />
+                        </td>
                         <td style={{ ...td, textAlign: 'center' }}>
                           <input type="number" min="0" max="100" step="1" value={item.descuento}
                             onChange={e => actualizarDescuento(item.id, parseFloat(e.target.value) || 0)}
                             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); inputRef.current?.focus() } }}
                             onFocus={e => e.target.select()}
-                            style={{ width: '60px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px' }}
+                            style={{ width: '55px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px' }}
                           />
                         </td>
                         <td style={{ ...td, textAlign: 'right' }}>
                           <input
                             type="text"
-                            defaultValue={subtotal.toFixed(2)}
+                            defaultValue={subtotalItem.toFixed(2)}
                             onBlur={e => {
                               const val = parseFloat(e.target.value.replace(/[$,]/g, ''))
                               if (!isNaN(val) && val > 0) {
@@ -439,7 +459,7 @@ export default function Caja() {
                                 if (cantRefs.current[item.id]) cantRefs.current[item.id].value = nuevaCantidad.toFixed(3)
                                 e.target.value = val.toFixed(2)
                               } else {
-                                e.target.value = subtotal.toFixed(2)
+                                e.target.value = subtotalItem.toFixed(2)
                               }
                             }}
                             onKeyDown={e => {
@@ -502,43 +522,48 @@ export default function Caja() {
           )}
         </div>
 
-        {/* Totales */}
+        {/* Resumen */}
         <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', padding: '1rem' }}>
           <p style={{ margin: '0 0 8px', fontSize: '12px', color: '#888', fontWeight: '600' }}>RESUMEN</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
               <span style={{ color: '#888' }}>Subtotal</span>
-              <span>{fmt(subtotalConIva)}</span>
+              <span>{fmt(subtotalBruto)}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px' }}>
               <span style={{ color: '#888' }}>Descuento global %</span>
-              <input type="number" min="0" max="100" step="0.01" value={descuentoGlobal}
-                onChange={e => setDescuentoGlobal(parseFloat(e.target.value) || 0)}
+              <input type="number" min="0" max="100" step="1" value={descuentoGlobal}
+                onChange={e => {
+                  const val = parseFloat(e.target.value) || 0
+                  setDescuentoGlobal(val)
+                  setCarrito(prev => prev.map(i => ({ ...i, descuento: val })))
+                }}
                 onFocus={e => e.target.select()}
-                style={{ width: '70px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px' }}
+                style={{ width: '60px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px' }}
               />
             </div>
-            {descuentoGlobal > 0 && (
+            {descItems > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#e53e3e' }}>
                 <span>Descuento</span>
-                <span>-{fmt(descGlobal)}</span>
+                <span>-{fmt(descItems)}</span>
               </div>
             )}
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#888' }}>
-              <span>IVA (16%)</span>
-              <span>{fmt(Math.round(ivaTotal * 100) / 100)}</span>
-            </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '20px', fontWeight: '700', borderTop: '2px solid #e0e0e0', paddingTop: '8px', marginTop: '4px' }}>
               <span>Total</span>
               <input
                 ref={totalRef}
                 type="text"
                 defaultValue={total.toFixed(2)}
+                readOnly={!totalEditable}
+                onDoubleClick={() => { setTotalEditable(true); setTimeout(() => totalRef.current?.select(), 50) }}
                 onBlur={e => {
+                  setTotalEditable(false)
                   const val = parseFloat(e.target.value.replace(/[$,]/g, ''))
-                  if (!isNaN(val) && val > 0 && subtotalConIva > 0) {
-                    const nuevoDesc = Math.max(0, Math.min(100, (1 - val / subtotalConIva) * 100))
-                    setDescuentoGlobal(Math.round(nuevoDesc * 10000) / 10000)
+                  if (!isNaN(val) && val > 0 && subtotalBruto > 0) {
+                    const nuevoDesc = Math.max(0, Math.min(100, (1 - val / subtotalBruto) * 100))
+                    const pct = Math.round(nuevoDesc * 10000) / 10000
+                    setDescuentoGlobal(pct)
+                    setCarrito(prev => prev.map(i => ({ ...i, descuento: pct })))
                     e.target.value = val.toFixed(2)
                   } else {
                     e.target.value = total.toFixed(2)
@@ -546,10 +571,14 @@ export default function Caja() {
                 }}
                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur() } }}
                 onFocus={e => e.target.select()}
+                title="Doble clic para editar"
                 style={{
                   width: '130px', padding: '4px 8px', borderRadius: '6px',
-                  border: '2px solid #f97316', textAlign: 'right',
-                  fontSize: '20px', fontWeight: '700', color: '#f97316', outline: 'none'
+                  border: `2px solid ${totalEditable ? '#f97316' : '#e0e0e0'}`,
+                  textAlign: 'right', fontSize: '20px', fontWeight: '700',
+                  color: '#f97316', outline: 'none',
+                  cursor: totalEditable ? 'text' : 'pointer',
+                  background: totalEditable ? 'white' : '#fafafa',
                 }}
               />
             </div>
@@ -645,25 +674,35 @@ function TicketVenta({ venta, onNueva }) {
             </tr>
           </thead>
           <tbody>
-            {venta.items.map((item, i) => (
-              <tr key={i} style={{ borderTop: '1px dotted #eee' }}>
-                <td style={{ paddingTop: '4px', paddingRight: '4px' }}>{item.nombre}</td>
-                <td style={{ textAlign: 'right', paddingTop: '4px' }}>{item.cantidad}</td>
-                <td style={{ textAlign: 'right', paddingTop: '4px' }}>{new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2 }).format(item.precio)}</td>
-                <td style={{ textAlign: 'right', paddingTop: '4px' }}>{new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2 }).format(Math.round(item.precio * item.cantidad * (1 - item.descuento / 100) * 100) / 100)}</td>
-              </tr>
-            ))}
+            {venta.items.map((item, i) => {
+              const precioFinal = Math.round(item.precio * (1 - item.descuento / 100) * 100) / 100
+              const totalItem   = Math.round(precioFinal * item.cantidad * 100) / 100
+              return (
+                <tr key={i} style={{ borderTop: '1px dotted #eee' }}>
+                  <td style={{ paddingTop: '4px', paddingRight: '4px' }}>{item.nombre}</td>
+                  <td style={{ textAlign: 'right', paddingTop: '4px' }}>{item.cantidad}</td>
+                  <td style={{ textAlign: 'right', paddingTop: '4px' }}>{new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2 }).format(precioFinal)}</td>
+                  <td style={{ textAlign: 'right', paddingTop: '4px' }}>{new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2 }).format(totalItem)}</td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
         <div style={{ borderTop: '1px dashed #ccc', marginTop: '8px', paddingTop: '8px' }}>
+          {venta.descItems > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
+              <span>Descuento</span>
+              <span>-{new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(venta.descItems)}</span>
+            </div>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: '700', fontSize: '14px' }}>
             <span>TOTAL</span>
-            <span>{fmt(venta.total)}</span>
+            <span>{new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(venta.total)}</span>
           </div>
           {venta.cambio > 0 && (
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
               <span>Cambio</span>
-              <span>{fmt(venta.cambio)}</span>
+              <span>{new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(venta.cambio)}</span>
             </div>
           )}
         </div>
