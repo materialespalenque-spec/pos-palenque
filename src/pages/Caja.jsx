@@ -381,7 +381,16 @@ useEffect(() => {
                   {carrito.map(item => {
                     const subtotalItem = Math.round(item.precio * item.cantidad * (1 - item.descuento / 100) * 100) / 100
                     return (
-                      <tr key={item.id} style={{ borderTop: '1px solid #f0f0f0' }}>
+                      <tr key={item.id} style={{ borderTop: '1px solid #f0f0f0', ...(() => {
+                        const costoUnit   = item.costo / (item.factor || 1)
+                        const precioFinal = item.precio * (1 - item.descuento / 100)
+                        const margen      = precioFinal > 0 ? (precioFinal - costoUnit) / precioFinal * 100 : 0
+                      return margen < 0
+                      ? { background: '#ffe4e4', borderLeft: '4px solid #e53e3e' }
+                      : margen < 10
+                      ? { background: '#fef3c7', borderLeft: '4px solid #BA7517' }
+                      : {}
+                      })() }}>
                         <td style={td}>
                           <p style={{ margin: 0, fontSize: '13px', fontWeight: '600' }}>{item.nombre}</p>
                           <p style={{ margin: 0, fontSize: '11px', color: '#888' }}>
