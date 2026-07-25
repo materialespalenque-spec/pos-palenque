@@ -1,7 +1,7 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 
-const hoy = new Date().toISOString().split('T')[0]
+const hoy = () => new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0]
 
 const fmt = n => new Intl.NumberFormat('es-MX', {
   style: 'currency', currency: 'MXN'
@@ -28,17 +28,19 @@ const METODOS = {
 }
 
 export default function Ventas() {
-  const [desde, setDesde]           = useState(hoy)
-  const [hasta, setHasta]           = useState(hoy)
-  const [busqueda, setBusqueda]     = useState('')
-  const [ventas, setVentas]         = useState([])
-  const [cargando, setCargando]     = useState(false)
+  const [desde, setDesde]               = useState(hoy())
+  const [hasta, setHasta]               = useState(hoy())
+  const [busqueda, setBusqueda]         = useState('')
+  const [ventas, setVentas]             = useState([])
+  const [cargando, setCargando]         = useState(false)
   const [ventaAbierta, setVentaAbierta] = useState(null)
-  const [vista, setVista]           = useState('lista') // lista | corte
-  const [ayer, setAyer]             = useState(null)
+  const [filaSeleccionada, setFilaSeleccionada] = useState(null)
+  const [vista, setVista]               = useState('lista')
+  const [ayer, setAyer]                 = useState(null)
 
   useEffect(() => {
     cargarVentas()
+    cargarAyer()
   }, [])
 
   async function cargarVentas(d = desde, h = hasta) {
@@ -48,12 +50,13 @@ export default function Ventas() {
       .from('ventas')
       .select(`
         id, folio, total, subtotal, descuento, estado, created_at,
-        contactos(nombre),
+        direccion_entrega,
+        contactos(id, nombre, telefono, colonia, direccion),
         usuarios(email),
         pagos(metodo, monto)
       `)
-      .gte('created_at', `${d}T00:00:00`)
-      .lte('created_at', `${h}T23:59:59`)
+      .gte('created_at', new Date(`${d}T00:00:00`).toISOString())
+      .lte('created_at', new Date(`${h}T23:59:59`).toISOString())
       .order('created_at', { ascending: false })
     if (!error && data) setVentas(data)
     setCargando(false)
@@ -62,51 +65,54 @@ export default function Ventas() {
   async function cargarAyer() {
     const d = new Date()
     d.setDate(d.getDate() - 1)
-    const fecha = d.toISOString().split('T')[0]
+    const fecha = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().split('T')[0]
     const { data } = await supabase
       .from('ventas')
       .select('total, estado')
-      .gte('created_at', `${fecha}T00:00:00`)
-      .lte('created_at', `${fecha}T23:59:59`)
+      .gte('created_at', new Date(`${fecha}T00:00:00`).toISOString())
+      .lte('created_at', new Date(`${fecha}T23:59:59`).toISOString())
     if (data) {
       const completadas = data.filter(v => v.estado === 'completada')
       setAyer(completadas.reduce((s, v) => s + Number(v.total), 0))
     }
   }
 
-  useEffect(() => { cargarAyer() }, [])
-
   const consultar = () => cargarVentas()
 
-  const setHoy = () => { setDesde(hoy); setHasta(hoy); cargarVentas(hoy, hoy) }
+  const setHoyFecha = () => {
+    const h = hoy(); setDesde(h); setHasta(h); cargarVentas(h, h)
+  }
   const setAyerFecha = () => {
     const d = new Date(); d.setDate(d.getDate() - 1)
-    const f = d.toISOString().split('T')[0]
+    const f = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().split('T')[0]
     setDesde(f); setHasta(f); cargarVentas(f, f)
   }
   const setSemana = () => {
     const d = new Date(); d.setDate(d.getDate() - 6)
-    const f = d.toISOString().split('T')[0]
-    setDesde(f); setHasta(hoy); cargarVentas(f, hoy)
+    const f = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().split('T')[0]
+    const h = hoy(); setDesde(f); setHasta(h); cargarVentas(f, h)
   }
 
-  const ventasFiltradas = ventas.filter(v => {
-    if (!busqueda.trim()) return true
-    const q = busqueda.toLowerCase()
-    return (
-      v.folio?.toLowerCase().includes(q) ||
-      v.contactos?.nombre?.toLowerCase().includes(q) ||
-      v.usuarios?.email?.toLowerCase().includes(q) ||
-      String(v.total).includes(q)
-    )
-  })
+    const ventasFiltradas = ventas.filter(v => {
+      if (!busqueda.trim()) return true
+      const q = busqueda.trim().toLowerCase()
+      if (q.startsWith('$')) {
+        const monto = parseFloat(q.replace('$', '').replace(',', ''))
+        return !isNaN(monto) && Number(v.total) === monto
+      }
+      return (
+        v.folio?.toLowerCase().includes(q) ||
+        v.contactos?.nombre?.toLowerCase().includes(q) ||
+        v.usuarios?.email?.toLowerCase().includes(q)
+      )
+    })
 
-  const completadas  = ventasFiltradas.filter(v => v.estado === 'completada')
-  const canceladas   = ventasFiltradas.filter(v => v.estado === 'cancelada')
-  const totalVentas  = completadas.reduce((s, v) => s + Number(v.total), 0)
-  const totalDesc    = completadas.reduce((s, v) => s + Number(v.descuento || 0), 0)
-  const ticketProm   = completadas.length > 0 ? totalVentas / completadas.length : 0
-  const crecimiento  = ayer > 0 ? ((totalVentas - ayer) / ayer * 100) : null
+  const completadas = ventasFiltradas.filter(v => v.estado === 'completada')
+  const canceladas  = ventasFiltradas.filter(v => v.estado === 'cancelada')
+  const totalVentas = completadas.reduce((s, v) => s + Number(v.total), 0)
+  const totalDesc   = completadas.reduce((s, v) => s + Number(v.descuento || 0), 0)
+  const ticketProm  = completadas.length > 0 ? totalVentas / completadas.length : 0
+  const crecimiento = ayer > 0 ? ((totalVentas - ayer) / ayer * 100) : null
 
   const porMetodo = completadas.reduce((acc, v) => {
     v.pagos?.forEach(p => {
@@ -114,6 +120,8 @@ export default function Ventas() {
     })
     return acc
   }, {})
+
+  const abrirVenta = (v) => setVentaAbierta({ ...v })
 
   if (ventaAbierta) {
     return <DetalleVenta venta={ventaAbierta} onVolver={() => { setVentaAbierta(null); cargarVentas() }} />
@@ -135,10 +143,10 @@ export default function Ventas() {
             style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '14px' }} />
         </div>
         <button onClick={consultar} style={{ padding: '8px 20px', background: '#f97316', color: 'white', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: '600', cursor: 'pointer' }}>Consultar</button>
-        <button onClick={setHoy} style={{ padding: '8px 14px', background: 'white', color: '#333', border: '1px solid #ddd', borderRadius: '6px', fontSize: '13px', cursor: 'pointer' }}>Hoy</button>
+        <button onClick={setHoyFecha} style={{ padding: '8px 14px', background: 'white', color: '#333', border: '1px solid #ddd', borderRadius: '6px', fontSize: '13px', cursor: 'pointer' }}>Hoy</button>
         <button onClick={setAyerFecha} style={{ padding: '8px 14px', background: 'white', color: '#333', border: '1px solid #ddd', borderRadius: '6px', fontSize: '13px', cursor: 'pointer' }}>Ayer</button>
         <button onClick={setSemana} style={{ padding: '8px 14px', background: 'white', color: '#333', border: '1px solid #ddd', borderRadius: '6px', fontSize: '13px', cursor: 'pointer' }}>7 días</button>
-        <input type="text" placeholder="🔍 Buscar folio, cliente, vendedor o monto..." value={busqueda}
+        <input type="text" placeholder="🔍 Buscar folio, cliente, vendedor o $monto..." value={busqueda}
           onChange={e => setBusqueda(e.target.value)}
           style={{ flex: 1, minWidth: '250px', padding: '8px 12px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px' }} />
       </div>
@@ -199,7 +207,16 @@ export default function Ventas() {
               </thead>
               <tbody>
                 {ventasFiltradas.map(v => (
-                  <tr key={v.id} onDoubleClick={() => setVentaAbierta(v)} style={{ borderTop: '1px solid #f0f0f0', opacity: v.estado === 'cancelada' ? 0.5 : 1, cursor: 'pointer' }}>
+                  <tr key={v.id}
+                    onClick={() => setFilaSeleccionada(v.id === filaSeleccionada ? null : v.id)}
+                    onDoubleClick={() => abrirVenta(v)}
+                    style={{
+                      borderTop: '1px solid #f0f0f0',
+                      opacity: v.estado === 'cancelada' ? 0.5 : 1,
+                      cursor: 'pointer',
+                      background: filaSeleccionada === v.id ? '#fff7ed' : 'white',
+                      borderLeft: filaSeleccionada === v.id ? '3px solid #f97316' : '3px solid transparent',
+                    }}>
                     <td style={{ ...td, fontWeight: '600', color: '#534AB7' }}>{v.folio}</td>
                     <td style={td}>{fmtFecha(v.created_at)}</td>
                     <td style={td}>{fmtHora(v.created_at)}</td>
@@ -219,7 +236,8 @@ export default function Ventas() {
                       </span>
                     </td>
                     <td style={{ ...td, textAlign: 'center' }}>
-                      <button onClick={() => setVentaAbierta(v)} style={{ padding: '4px 10px', borderRadius: '6px', border: '1px solid #ddd', background: 'white', fontSize: '12px', cursor: 'pointer', color: '#333' }}>
+                      <button onClick={e => { e.stopPropagation(); abrirVenta(v) }}
+                        style={{ padding: '4px 10px', borderRadius: '6px', border: '1px solid #ddd', background: 'white', fontSize: '12px', cursor: 'pointer', color: '#333' }}>
                         Ver →
                       </button>
                     </td>
@@ -274,9 +292,7 @@ export default function Ventas() {
           </div>
 
           <div style={{ gridColumn: '1 / -1', background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', padding: '1.25rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <h3 style={{ margin: 0, fontSize: '15px', color: '#1a1a2e' }}>Resumen por vendedor</h3>
-            </div>
+            <h3 style={{ margin: '0 0 1rem', fontSize: '15px', color: '#1a1a2e' }}>Resumen por vendedor</h3>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: '#f9f9f9' }}>
@@ -293,7 +309,7 @@ export default function Ventas() {
                     const email = v.usuarios?.email?.split('@')[0] || 'Sin asignar'
                     if (!acc[email]) acc[email] = { tickets: 0, total: 0, descuento: 0 }
                     acc[email].tickets++
-                    acc[email].total    += Number(v.total)
+                    acc[email].total     += Number(v.total)
                     acc[email].descuento += Number(v.descuento || 0)
                     return acc
                   }, {})
@@ -317,11 +333,18 @@ export default function Ventas() {
 }
 
 function DetalleVenta({ venta, onVolver }) {
-  const [items, setItems]           = useState([])
-  const [cargando, setCargando]     = useState(true)
-  const [cancelando, setCancelando] = useState(false)
-  const [confirmando, setConfirmando] = useState(false)
-  const [error, setError]           = useState(null)
+  const [items, setItems]                   = useState([])
+  const [cargando, setCargando]             = useState(true)
+  const [cancelando, setCancelando]         = useState(false)
+  const [confirmando, setConfirmando]       = useState(false)
+  const [mostrarDir, setMostrarDir]         = useState(false)
+  const [editandoEntrega, setEditandoEntrega] = useState(false)
+  const [busqContacto, setBusqContacto]     = useState('')
+  const [contactos, setContactos]           = useState([])
+  const [guardandoEntrega, setGuardandoEntrega] = useState(false)
+  const [contactoActual, setContactoActual] = useState(venta.contactos)
+  const [dirActual, setDirActual]           = useState(venta.direccion_entrega)
+  const [error, setError]                   = useState(null)
 
   useEffect(() => {
     async function cargar() {
@@ -335,21 +358,46 @@ function DetalleVenta({ venta, onVolver }) {
     cargar()
   }, [venta.id])
 
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (!busqContacto.trim()) { setContactos([]); return }
+      const { data } = await supabase
+        .from('contactos')
+        .select('id, nombre, telefono, colonia, direccion')
+        .ilike('nombre', `%${busqContacto}%`)
+        .limit(5)
+      setContactos(data || [])
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [busqContacto])
+
+  const asignarEntrega = async (contacto) => {
+    setGuardandoEntrega(true)
+    const { error: e } = await supabase
+      .from('ventas')
+      .update({ contacto_id: contacto.id, direccion_entrega: contacto.direccion })
+      .eq('id', venta.id)
+    if (!e) {
+      setContactoActual(contacto)
+      setDirActual(contacto.direccion)
+      setEditandoEntrega(false)
+      setBusqContacto('')
+      setContactos([])
+      setMostrarDir(false)
+    }
+    setGuardandoEntrega(false)
+  }
+
   const cancelarVenta = async () => {
     setCancelando(true)
     setError(null)
-    const { error: e } = await supabase
-      .from('ventas')
-      .update({ estado: 'cancelada' })
-      .eq('id', venta.id)
+    const { error: e } = await supabase.from('ventas').update({ estado: 'cancelada' }).eq('id', venta.id)
     if (e) { setError(e.message); setCancelando(false); return }
     setConfirmando(false)
     onVolver()
   }
 
   const reimprimir = () => {
-    const ventaData = { ...venta, items, total: venta.total, cambio: 0, contacto: venta.contactos, descItems: venta.descuento }
-    // Crear ventana de impresión
     const w = window.open('', '_blank', 'width=400,height=600')
     w.document.write(`
       <html><head><title>Ticket ${venta.folio}</title>
@@ -363,7 +411,11 @@ function DetalleVenta({ venta, onVolver }) {
       <div style="font-size:11px;color:#888">${new Date(venta.created_at).toLocaleString('es-MX')}</div></div>
       <hr>
       <div>Folio: <strong>${venta.folio}</strong></div>
-      ${venta.contactos ? `<div>Entrega: <strong>${venta.contactos.nombre}</strong></div>` : ''}
+      ${contactoActual ? `
+        <div>Entrega: <strong>${contactoActual.nombre}</strong></div>
+        ${contactoActual.telefono ? `<div>Tel: ${contactoActual.telefono}</div>` : ''}
+        ${dirActual ? `<div>Dir: ${dirActual}</div>` : ''}
+      ` : ''}
       <hr>
       <table>
         <thead><tr><th>Producto</th><th class="right">Cant</th><th class="right">Precio</th><th class="right">Total</th></tr></thead>
@@ -389,7 +441,6 @@ function DetalleVenta({ venta, onVolver }) {
 
   return (
     <div>
-      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '8px' }}>
         <button onClick={onVolver} style={{ padding: '8px 16px', background: 'white', border: '1px solid #ddd', borderRadius: '8px', fontSize: '13px', cursor: 'pointer' }}>
           ← Volver
@@ -419,7 +470,6 @@ function DetalleVenta({ venta, onVolver }) {
       {error && <p style={{ color: '#e53e3e', fontSize: '13px', padding: '8px 12px', background: '#fef2f2', borderRadius: '8px', marginBottom: '1rem' }}>{error}</p>}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: '1rem' }}>
-        {/* Productos */}
         <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', overflow: 'hidden' }}>
           <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid #e0e0e0' }}>
             <h3 style={{ margin: 0, fontSize: '15px', color: '#1a1a2e' }}>Productos — {venta.folio}</h3>
@@ -458,7 +508,6 @@ function DetalleVenta({ venta, onVolver }) {
           )}
         </div>
 
-        {/* Info venta */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', padding: '1.25rem' }}>
             <h3 style={{ margin: '0 0 1rem', fontSize: '15px', color: '#1a1a2e' }}>Información</h3>
@@ -467,7 +516,71 @@ function DetalleVenta({ venta, onVolver }) {
               <FilaInfo label="Fecha" valor={fmtFecha(venta.created_at)} />
               <FilaInfo label="Hora" valor={fmtHora(venta.created_at)} />
               <FilaInfo label="Vendedor" valor={venta.usuarios?.email?.split('@')[0] || '—'} />
-              <FilaInfo label="Cliente" valor={venta.contactos?.nombre || 'Mostrador'} />
+              <FilaInfo label="Cliente" valor={contactoActual?.nombre || 'Mostrador'} />
+              {contactoActual?.telefono && <FilaInfo label="Teléfono" valor={contactoActual.telefono} />}
+
+              {dirActual && (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px' }}>
+                    <span style={{ color: '#888' }}>Dirección</span>
+                    <button onClick={() => setMostrarDir(!mostrarDir)} style={{
+                      padding: '2px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '600',
+                      background: mostrarDir ? '#1a1a2e' : '#f0f0f0',
+                      color: mostrarDir ? 'white' : '#555',
+                      border: 'none', cursor: 'pointer'
+                    }}>
+                      {mostrarDir ? 'Ocultar' : 'Ver dirección'}
+                    </button>
+                  </div>
+                  {mostrarDir && (
+                    <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#555', background: '#f9f9f9', padding: '8px', borderRadius: '6px', lineHeight: '1.5' }}>
+                      {dirActual}
+                    </p>
+                  )}
+                </>
+              )}
+
+              {!editandoEntrega && venta.estado === 'completada' && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+                  <button onClick={() => setEditandoEntrega(true)} style={{
+                    padding: '4px 12px', borderRadius: '6px', fontSize: '11px', fontWeight: '600',
+                    background: contactoActual ? '#f0f0f0' : '#f0fdf4',
+                    color: contactoActual ? '#555' : '#1D9E75',
+                    border: `1px solid ${contactoActual ? '#ddd' : '#bbf7d0'}`,
+                    cursor: 'pointer'
+                  }}>
+                    {contactoActual ? '✏️ Cambiar entrega' : '+ Agregar entrega'}
+                  </button>
+                </div>
+              )}
+
+              {editandoEntrega && (
+                <div style={{ position: 'relative', marginTop: '4px' }}>
+                  <input type="text" placeholder="Buscar contacto..." value={busqContacto}
+                    onChange={e => setBusqContacto(e.target.value)}
+                    autoFocus
+                    style={{ width: '100%', padding: '8px 32px 8px 10px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', boxSizing: 'border-box' }}
+                  />
+                  <button onClick={() => { setEditandoEntrega(false); setBusqContacto(''); setContactos([]) }}
+                    style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#aaa', fontSize: '16px' }}>✕</button>
+                  {contactos.length > 0 && (
+                    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'white', border: '1px solid #e0e0e0', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 100, marginTop: '4px' }}>
+                      {contactos.map(c => (
+                        <div key={c.id} onClick={() => asignarEntrega(c)}
+                          style={{ padding: '8px 1rem', cursor: 'pointer', borderBottom: '1px solid #f0f0f0' }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#f9f9f9'}
+                          onMouseLeave={e => e.currentTarget.style.background = 'white'}
+                        >
+                          <p style={{ margin: 0, fontSize: '13px', fontWeight: '600' }}>{c.nombre}</p>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#888' }}>{c.colonia} — {c.telefono}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {guardandoEntrega && <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#888' }}>Guardando...</p>}
+                </div>
+              )}
+
               <FilaInfo label="Estado" valor={
                 <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '10px', background: venta.estado === 'completada' ? '#f0fdf4' : '#fef2f2', color: venta.estado === 'completada' ? '#1D9E75' : '#e53e3e', fontWeight: '600' }}>
                   {venta.estado === 'completada' ? 'Completada' : 'Cancelada'}
