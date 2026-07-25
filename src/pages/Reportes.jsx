@@ -518,12 +518,42 @@ function ComparativoAnual() {
   )
 }
 
+function parsearFechaISO(fechaStr) {
+  // Soporta: "2026-06-01 07:55:45", "2026-06-01T07:55:45", "2026-06-01"
+  if (!fechaStr) return null
+  const s = fechaStr.toString().trim()
+  // Formato YYYY-MM-DD HH:MM:SS o YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const iso = s.replace(' ', 'T')
+    const d = new Date(iso)
+    if (!isNaN(d.getTime())) return d.toISOString()
+    // Si falla, usar solo la fecha
+    return new Date(s.slice(0, 10) + 'T12:00:00').toISOString()
+  }
+  // Formato DD/MM/YYYY
+  if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) {
+    const [d, m, y] = s.split('/')
+    return new Date(`${y}-${m}-${d}T12:00:00`).toISOString()
+  }
+  return new Date().toISOString()
+}
+
 function CargadorSicar() {
   const [archivo, setArchivo]     = useState(null)
   const [cargando, setCargando]   = useState(false)
   const [progreso, setProgreso]   = useState('')
   const [resultado, setResultado] = useState(null)
   const [error, setError]         = useState(null)
+  const [userId, setUserId]       = useState(null)
+
+  const NEGOCIO_ID  = 'b69b5ee8-b22a-426c-8426-cdf758a12b95'
+  const SUCURSAL_ID = '8e56bb7a-9041-4741-a468-4ba68a97f163'
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (data?.user) setUserId(data.user.id)
+    })
+  }, [])
 
   const procesarArchivo = (e) => {
     const file = e.target.files[0]
@@ -571,6 +601,7 @@ function CargadorSicar() {
       const esCanceladas = rows.some(r => r[0]?.toString().includes('Reporte de Ventas Canceladas'))
 
       let diasUtilidad = {}, mesesUtilidad = {}, diasPagos = {}, diasCanc = {}
+      let ticketsNuevos = []
 
       if (esUtilidades) {
         setProgreso('Procesando reporte de utilidades...')
@@ -592,10 +623,16 @@ function CargadorSicar() {
         setProgreso('Procesando reporte general de ventas...')
         for (const row of rows) {
           if (row[0]?.toString().trim() !== 'Ticket') continue
-          const fecha = parseFechaUtil(row[3])
+          const fechaOriginal = row[3]?.toString().trim() || ''
+          const fecha = parseFechaUtil(fechaOriginal)
           if (!fecha) continue
           const total = limpiar(row[30])
           if (total <= 0) continue
+          const sicarId = parseInt(row[5])
+          const estado  = row[26]?.toString().trim()
+          if (estado !== 'V') continue
+
+          // Pagos por día
           if (!diasPagos[fecha]) diasPagos[fecha] = { efectivo: 0, cheque: 0, credito: 0, transferencia: 0, tarjeta: 0, otros: 0, total: 0 }
           diasPagos[fecha].efectivo      += limpiar(row[32])
           diasPagos[fecha].cheque        += limpiar(row[33])
@@ -604,6 +641,17 @@ function CargadorSicar() {
           diasPagos[fecha].tarjeta       += limpiar(row[37])
           diasPagos[fecha].otros         += limpiar(row[36]) + limpiar(row[38]) + limpiar(row[39])
           diasPagos[fecha].total         += total
+
+          // Método principal
+          const ef = limpiar(row[32]), ch = limpiar(row[33]), cr = limpiar(row[34])
+          const tr = limpiar(row[35]), ta = limpiar(row[37])
+          let metodo = 'efectivo'
+          if (ta > 0) metodo = 'tarjeta'
+          if (tr > 0) metodo = 'transferencia'
+          if (cr > 0) metodo = 'credito'
+          if (ch > 0) metodo = 'cheque'
+
+          ticketsNuevos.push({ sicar_id: sicarId, fechaOriginal, total, metodo })
         }
       }
 
@@ -633,11 +681,70 @@ function CargadorSicar() {
       }
 
       if (esGeneral) {
-        const pagosArr = Object.entries(diasPagos).map(([fecha, d]) => ({ fecha, efectivo: Math.round(d.efectivo*100)/100, cheque: Math.round(d.cheque*100)/100, credito: Math.round(d.credito*100)/100, transferencia: Math.round(d.transferencia*100)/100, tarjeta: Math.round(d.tarjeta*100)/100, otros: Math.round(d.otros*100)/100, total: Math.round(d.total*100)/100 }))
+        // Subir pagos por día
+        const pagosArr = Object.entries(diasPagos).map(([fecha, d]) => ({
+          fecha,
+          efectivo:      Math.round(d.efectivo*100)/100,
+          cheque:        Math.round(d.cheque*100)/100,
+          credito:       Math.round(d.credito*100)/100,
+          transferencia: Math.round(d.transferencia*100)/100,
+          tarjeta:       Math.round(d.tarjeta*100)/100,
+          otros:         Math.round(d.otros*100)/100,
+          total:         Math.round(d.total*100)/100,
+        }))
         setProgreso(`Subiendo ${pagosArr.length} días de métodos de pago...`)
         const { error: e3 } = await supabase.rpc('upsert_sicar_pagos_dia', { datos: pagosArr })
         if (e3) throw new Error(`Error pagos: ${e3.message}`)
-        setResultado({ tipo: 'general', dias: pagosArr.length, total: pagosArr.reduce((s,d) => s+d.total, 0) })
+
+        // Verificar cuáles ya existen
+        setProgreso('Verificando tickets existentes...')
+        const sicarIds = ticketsNuevos.map(t => t.sicar_id)
+        const { data: existentes } = await supabase
+          .from('ventas')
+          .select('sicar_id')
+          .in('sicar_id', sicarIds)
+        const idsExistentes = new Set((existentes || []).map(v => v.sicar_id))
+        const porInsertar = ticketsNuevos.filter(t => !idsExistentes.has(t.sicar_id))
+
+        if (porInsertar.length > 0) {
+          setProgreso(`Insertando ${porInsertar.length} tickets nuevos...`)
+          const ventasRows = porInsertar.map(t => ({
+            negocio_id:  NEGOCIO_ID,
+            sucursal_id: SUCURSAL_ID,
+            usuario_id:  userId,
+            sicar_id:    t.sicar_id,
+            folio:       `SICAR-${t.sicar_id}`,
+            subtotal:    Math.round(t.total * 100) / 100,
+            descuento:   0,
+            iva:         0,
+            total:       Math.round(t.total * 100) / 100,
+            estado:      'completada',
+            created_at:  parsearFechaISO(t.fechaOriginal),
+          }))
+
+          for (let i = 0; i < ventasRows.length; i += 100) {
+            const lote = ventasRows.slice(i, i + 100)
+            const { data: ventasInsertadas, error: eV } = await supabase
+              .from('ventas').insert(lote).select('id, sicar_id')
+            if (eV) throw new Error(`Error insertando ventas: ${eV.message}`)
+
+            const pagosVentas = ventasInsertadas.map(v => {
+              const t = porInsertar.find(x => x.sicar_id === v.sicar_id)
+              return { venta_id: v.id, metodo: t.metodo, monto: Math.round(t.total * 100) / 100 }
+            })
+            const { error: eP } = await supabase.from('pagos').insert(pagosVentas)
+            if (eP) throw new Error(`Error insertando pagos: ${eP.message}`)
+            setProgreso(`Insertando tickets... ${Math.min(i + 100, ventasRows.length)}/${ventasRows.length}`)
+          }
+        }
+
+        setResultado({
+          tipo:       'general',
+          dias:       pagosArr.length,
+          total:      pagosArr.reduce((s, d) => s + d.total, 0),
+          insertados: porInsertar.length,
+          existentes: idsExistentes.size,
+        })
       }
 
       if (esCanceladas) {
@@ -684,7 +791,7 @@ function CargadorSicar() {
             {resultado.tipo === 'utilidades'
               ? `${resultado.dias} días y ${resultado.meses} meses actualizados — Total ventas: ${fmt2(resultado.ventas)}`
               : resultado.tipo === 'general'
-              ? `${resultado.dias} días de métodos de pago actualizados — Total: ${fmt2(resultado.total)}`
+              ? `${resultado.dias} días de pagos actualizados — ${resultado.insertados} tickets nuevos insertados, ${resultado.existentes} ya existían — Total: ${fmt2(resultado.total)}`
               : `${resultado.canceladas} canceladas en ${resultado.dias} días — Monto: ${fmt2(resultado.monto)}`
             }
           </p>

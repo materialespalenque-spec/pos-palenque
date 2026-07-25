@@ -93,19 +93,19 @@ export default function Ventas() {
     const h = hoy(); setDesde(f); setHasta(h); cargarVentas(f, h)
   }
 
-    const ventasFiltradas = ventas.filter(v => {
-      if (!busqueda.trim()) return true
-      const q = busqueda.trim().toLowerCase()
-      if (q.startsWith('$')) {
-        const monto = parseFloat(q.replace('$', '').replace(',', ''))
-        return !isNaN(monto) && Number(v.total) === monto
-      }
-      return (
-        v.folio?.toLowerCase().includes(q) ||
-        v.contactos?.nombre?.toLowerCase().includes(q) ||
-        v.usuarios?.email?.toLowerCase().includes(q)
-      )
-    })
+  const ventasFiltradas = ventas.filter(v => {
+    if (!busqueda.trim()) return true
+    const q = busqueda.trim().toLowerCase()
+    if (q.startsWith('$')) {
+      const monto = parseFloat(q.replace('$', '').replace(',', ''))
+      return !isNaN(monto) && Number(v.total) === monto
+    }
+    return (
+      v.folio?.toLowerCase().includes(q) ||
+      v.contactos?.nombre?.toLowerCase().includes(q) ||
+      v.usuarios?.email?.toLowerCase().includes(q)
+    )
+  })
 
   const completadas = ventasFiltradas.filter(v => v.estado === 'completada')
   const canceladas  = ventasFiltradas.filter(v => v.estado === 'cancelada')
@@ -146,16 +146,19 @@ export default function Ventas() {
         <button onClick={setHoyFecha} style={{ padding: '8px 14px', background: 'white', color: '#333', border: '1px solid #ddd', borderRadius: '6px', fontSize: '13px', cursor: 'pointer' }}>Hoy</button>
         <button onClick={setAyerFecha} style={{ padding: '8px 14px', background: 'white', color: '#333', border: '1px solid #ddd', borderRadius: '6px', fontSize: '13px', cursor: 'pointer' }}>Ayer</button>
         <button onClick={setSemana} style={{ padding: '8px 14px', background: 'white', color: '#333', border: '1px solid #ddd', borderRadius: '6px', fontSize: '13px', cursor: 'pointer' }}>7 días</button>
-        <input type="text" placeholder="🔍 Buscar folio, cliente, vendedor o $monto..." value={busqueda}
-          onChange={e => setBusqueda(e.target.value)}
-          style={{ flex: 1, minWidth: '250px', padding: '8px 12px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px' }} />
+        {vista === 'lista' && (
+          <input type="text" placeholder="🔍 Buscar folio, cliente, vendedor o $monto..." value={busqueda}
+            onChange={e => setBusqueda(e.target.value)}
+            style={{ flex: 1, minWidth: '250px', padding: '8px 12px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px' }} />
+        )}
       </div>
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: '8px' }}>
         {[
-          { id: 'lista', label: '🧾 Ventas' },
-          { id: 'corte', label: '🏧 Corte de caja' },
+          { id: 'lista',    label: '🧾 Ventas' },
+          { id: 'corte',    label: '🏧 Corte de caja' },
+          { id: 'articulo', label: '📦 Por artículo' },
         ].map(tab => (
           <button key={tab.id} onClick={() => setVista(tab.id)} style={{
             padding: '8px 16px', borderRadius: '8px', fontSize: '13px',
@@ -167,21 +170,23 @@ export default function Ventas() {
         ))}
       </div>
 
-      {/* Tarjetas resumen */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem' }}>
-        <Tarjeta label="Tickets" valor={completadas.length} color="#1D9E75" />
-        <Tarjeta label="Total ventas" valor={fmt(totalVentas)} color="#f97316" />
-        <Tarjeta label="Ticket promedio" valor={fmt(ticketProm)} color="#534AB7" />
-        <Tarjeta label="Descuentos" valor={fmt(totalDesc)} color="#BA7517" />
-        <Tarjeta label="Canceladas" valor={canceladas.length} color="#e53e3e" />
-        {crecimiento !== null && (
-          <Tarjeta
-            label="vs ayer"
-            valor={`${crecimiento >= 0 ? '▲' : '▼'} ${Math.abs(crecimiento).toFixed(1)}%`}
-            color={crecimiento >= 0 ? '#1D9E75' : '#e53e3e'}
-          />
-        )}
-      </div>
+      {/* Tarjetas resumen — solo en lista y corte */}
+      {vista !== 'articulo' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem' }}>
+          <Tarjeta label="Tickets" valor={completadas.length} color="#1D9E75" />
+          <Tarjeta label="Total ventas" valor={fmt(totalVentas)} color="#f97316" />
+          <Tarjeta label="Ticket promedio" valor={fmt(ticketProm)} color="#534AB7" />
+          <Tarjeta label="Descuentos" valor={fmt(totalDesc)} color="#BA7517" />
+          <Tarjeta label="Canceladas" valor={canceladas.length} color="#e53e3e" />
+          {crecimiento !== null && (
+            <Tarjeta
+              label="vs ayer"
+              valor={`${crecimiento >= 0 ? '▲' : '▼'} ${Math.abs(crecimiento).toFixed(1)}%`}
+              color={crecimiento >= 0 ? '#1D9E75' : '#e53e3e'}
+            />
+          )}
+        </div>
+      )}
 
       {/* Vista lista */}
       {vista === 'lista' && (
@@ -328,23 +333,171 @@ export default function Ventas() {
           </div>
         </div>
       )}
+
+      {/* Vista por artículo */}
+      {vista === 'articulo' && <PorArticulo desde={desde} hasta={hasta} />}
+    </div>
+  )
+}
+
+function PorArticulo({ desde, hasta }) {
+  const [busqueda, setBusqueda]     = useState('')
+  const [resultados, setResultados] = useState([])
+  const [buscando, setBuscando]     = useState(false)
+  const [resumen, setResumen]       = useState(null)
+
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (!busqueda.trim()) { setResultados([]); setResumen(null); return }
+      setBuscando(true)
+      const { data } = await supabase
+        .from('venta_items')
+        .select(`
+          nombre_producto, cantidad, subtotal, precio_unitario,
+          ventas!inner(created_at, estado, folio)
+        `)
+        .ilike('nombre_producto', `%${busqueda}%`)
+        .eq('ventas.estado', 'completada')
+        .gte('ventas.created_at', new Date(`${desde}T00:00:00`).toISOString())
+        .lte('ventas.created_at', new Date(`${hasta}T23:59:59`).toISOString())
+        .order('nombre_producto')
+
+      if (data) {
+        const totalUnidades = data.reduce((s, i) => s + Number(i.cantidad), 0)
+        const totalMonto    = data.reduce((s, i) => s + Number(i.subtotal), 0)
+        const porProducto   = data.reduce((acc, i) => {
+          const k = i.nombre_producto
+          if (!acc[k]) acc[k] = { unidades: 0, monto: 0, ventas: 0 }
+          acc[k].unidades += Number(i.cantidad)
+          acc[k].monto    += Number(i.subtotal)
+          acc[k].ventas   += 1
+          return acc
+        }, {})
+        setResumen({ totalUnidades, totalMonto, porProducto, items: data })
+        setResultados(data)
+      }
+      setBuscando(false)
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [busqueda, desde, hasta])
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', padding: '1rem' }}>
+        <input type="text" placeholder="🔍 Buscar producto — ej: block, cemento, varilla..."
+          value={busqueda} onChange={e => setBusqueda(e.target.value)} autoFocus
+          style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: '1px solid #ddd', fontSize: '15px', boxSizing: 'border-box' }}
+        />
+        <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#aaa' }}>
+          Período: {desde} al {hasta}
+        </p>
+      </div>
+
+      {buscando && <p style={{ color: '#888', textAlign: 'center' }}>Buscando...</p>}
+
+      {resumen && !buscando && (
+        <>
+          {/* Tarjetas resumen */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem' }}>
+            <Tarjeta label="Total unidades" valor={resumen.totalUnidades.toFixed(2)} color="#1D9E75" />
+            <Tarjeta label="Total monto" valor={fmt(resumen.totalMonto)} color="#f97316" />
+            <Tarjeta label="Aparece en" valor={`${resultados.length} ventas`} color="#534AB7" />
+          </div>
+
+          {/* Resumen por producto si hay múltiples */}
+          {Object.keys(resumen.porProducto).length > 1 && (
+            <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', overflow: 'hidden' }}>
+              <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid #e0e0e0' }}>
+                <h3 style={{ margin: 0, fontSize: '15px', color: '#1a1a2e' }}>Resumen por producto</h3>
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#f9f9f9' }}>
+                    <th style={th}>Producto</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Unidades</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Ventas</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Monto total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(resumen.porProducto).sort((a, b) => b[1].monto - a[1].monto).map(([nombre, d]) => (
+                    <tr key={nombre} style={{ borderTop: '1px solid #f0f0f0' }}>
+                      <td style={td}>{nombre}</td>
+                      <td style={{ ...td, textAlign: 'right', fontWeight: '600' }}>{d.unidades.toFixed(2)}</td>
+                      <td style={{ ...td, textAlign: 'right', color: '#888' }}>{d.ventas}</td>
+                      <td style={{ ...td, textAlign: 'right', fontWeight: '700', color: '#f97316' }}>{fmt(d.monto)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Detalle de ventas */}
+          <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', overflow: 'hidden' }}>
+            <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid #e0e0e0' }}>
+              <h3 style={{ margin: 0, fontSize: '15px', color: '#1a1a2e' }}>Detalle de ventas</h3>
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: '#f9f9f9' }}>
+                  <th style={th}>Producto</th>
+                  <th style={th}>Folio</th>
+                  <th style={th}>Fecha</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Cantidad</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Precio</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Subtotal</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resultados.map((item, i) => (
+                  <tr key={i} style={{ borderTop: '1px solid #f0f0f0' }}>
+                    <td style={td}>{item.nombre_producto}</td>
+                    <td style={{ ...td, color: '#534AB7', fontWeight: '600' }}>{item.ventas?.folio}</td>
+                    <td style={{ ...td, color: '#888', fontSize: '12px' }}>
+                      {new Date(item.ventas?.created_at).toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                    </td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: '600' }}>{Number(item.cantidad).toFixed(2)}</td>
+                    <td style={{ ...td, textAlign: 'right' }}>{fmt(item.precio_unitario)}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: '700', color: '#f97316' }}>{fmt(item.subtotal)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ background: '#f9f9f9', borderTop: '2px solid #e0e0e0' }}>
+                  <td colSpan={3} style={{ ...td, fontWeight: '700' }}>Total</td>
+                  <td style={{ ...td, textAlign: 'right', fontWeight: '700' }}>{resumen.totalUnidades.toFixed(2)}</td>
+                  <td></td>
+                  <td style={{ ...td, textAlign: 'right', fontWeight: '700', color: '#f97316' }}>{fmt(resumen.totalMonto)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </>
+      )}
+
+      {!buscando && busqueda && resultados.length === 0 && (
+        <p style={{ color: '#888', textAlign: 'center', padding: '2rem' }}>
+          Sin resultados para "{busqueda}" en el período seleccionado.
+        </p>
+      )}
     </div>
   )
 }
 
 function DetalleVenta({ venta, onVolver }) {
-  const [items, setItems]                   = useState([])
-  const [cargando, setCargando]             = useState(true)
-  const [cancelando, setCancelando]         = useState(false)
-  const [confirmando, setConfirmando]       = useState(false)
-  const [mostrarDir, setMostrarDir]         = useState(false)
+  const [items, setItems]                     = useState([])
+  const [cargando, setCargando]               = useState(true)
+  const [cancelando, setCancelando]           = useState(false)
+  const [confirmando, setConfirmando]         = useState(false)
+  const [mostrarDir, setMostrarDir]           = useState(false)
   const [editandoEntrega, setEditandoEntrega] = useState(false)
-  const [busqContacto, setBusqContacto]     = useState('')
-  const [contactos, setContactos]           = useState([])
+  const [busqContacto, setBusqContacto]       = useState('')
+  const [contactos, setContactos]             = useState([])
   const [guardandoEntrega, setGuardandoEntrega] = useState(false)
-  const [contactoActual, setContactoActual] = useState(venta.contactos)
-  const [dirActual, setDirActual]           = useState(venta.direccion_entrega)
-  const [error, setError]                   = useState(null)
+  const [contactoActual, setContactoActual]   = useState(venta.contactos)
+  const [dirActual, setDirActual]             = useState(venta.direccion_entrega)
+  const [error, setError]                     = useState(null)
 
   useEffect(() => {
     async function cargar() {
