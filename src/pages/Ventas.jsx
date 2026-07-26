@@ -52,6 +52,7 @@ export default function Ventas() {
         id, folio, total, subtotal, descuento, estado, created_at,
         direccion_entrega,
         contactos(id, nombre, telefono, colonia, direccion),
+        clientes(id, nombre, rfc, telefono, direccion),
         usuarios(email),
         pagos(metodo, monto)
       `)
@@ -103,6 +104,7 @@ export default function Ventas() {
     return (
       v.folio?.toLowerCase().includes(q) ||
       v.contactos?.nombre?.toLowerCase().includes(q) ||
+      v.clientes?.nombre?.toLowerCase().includes(q) ||
       v.usuarios?.email?.toLowerCase().includes(q)
     )
   })
@@ -225,7 +227,7 @@ export default function Ventas() {
                     <td style={{ ...td, fontWeight: '600', color: '#534AB7' }}>{v.folio}</td>
                     <td style={td}>{fmtFecha(v.created_at)}</td>
                     <td style={td}>{fmtHora(v.created_at)}</td>
-                    <td style={td}>{v.contactos?.nombre || <span style={{ color: '#ccc' }}>Mostrador</span>}</td>
+                    <td style={td}>{v.clientes?.nombre || v.contactos?.nombre || <span style={{ color: '#ccc' }}>Mostrador</span>}</td>
                     <td style={{ ...td, fontSize: '12px', color: '#888' }}>{v.usuarios?.email?.split('@')[0] || '—'}</td>
                     <td style={{ ...td, textAlign: 'center' }}>
                       {v.pagos?.map((p, i) => (
@@ -552,6 +554,7 @@ function DetalleVenta({ venta, onVolver }) {
 
   const reimprimir = () => {
     const w = window.open('', '_blank', 'width=400,height=600')
+    const metodosTexto = (venta.pagos || []).map(p => METODOS[p.metodo]?.label || p.metodo).join(', ') || '—'
     w.document.write(`
       <html><head><title>Ticket ${venta.folio}</title>
       <style>body{font-family:monospace;font-size:12px;max-width:320px;margin:0 auto;padding:1rem}
@@ -564,25 +567,33 @@ function DetalleVenta({ venta, onVolver }) {
       <div style="font-size:11px;color:#888">${new Date(venta.created_at).toLocaleString('es-MX')}</div></div>
       <hr>
       <div>Folio: <strong>${venta.folio}</strong></div>
+      ${venta.clientes ? `
+        <div>Cliente: <strong>${venta.clientes.nombre}</strong></div>
+        ${venta.clientes.rfc ? `<div>RFC: ${venta.clientes.rfc}</div>` : ''}
+      ` : ''}
       ${contactoActual ? `
         <div>Entrega: <strong>${contactoActual.nombre}</strong></div>
         ${contactoActual.telefono ? `<div>Tel: ${contactoActual.telefono}</div>` : ''}
         ${dirActual ? `<div>Dir: ${dirActual}</div>` : ''}
       ` : ''}
       <hr>
-      <table>
-        <thead><tr><th>Producto</th><th class="right">Cant</th><th class="right">Precio</th><th class="right">Total</th></tr></thead>
-        <tbody>
-          ${items.map(i => {
-            const precioFinal = Math.round(i.precio_unitario * 100) / 100
-            const totalItem   = Math.round(i.subtotal * 100) / 100
-            return `<tr><td>${i.nombre_producto}</td><td class="right">${i.cantidad}</td><td class="right">${precioFinal.toFixed(2)}</td><td class="right">${totalItem.toFixed(2)}</td></tr>`
-          }).join('')}
-        </tbody>
-      </table>
+      <div>
+        ${items.map((i, idx) => {
+          const precioFinal = Math.round(i.precio_unitario * 100) / 100
+          const totalItem   = Math.round(i.subtotal * 100) / 100
+          return `<div style="margin-top:${idx === 0 ? 0 : '7px'};padding-bottom:7px;${idx < items.length - 1 ? 'border-bottom:1px dotted #eee' : ''}">
+            <div style="font-weight:600">${i.nombre_producto}</div>
+            <div style="display:flex;justify-content:space-between;color:#555;margin-top:2px">
+              <span>${i.cantidad} x ${precioFinal.toFixed(2)}</span>
+              <span style="font-weight:600">${totalItem.toFixed(2)}</span>
+            </div>
+          </div>`
+        }).join('')}
+      </div>
       <hr>
-      ${Number(venta.descuento) > 0 ? `<div style="display:flex;justify-content:space-between"><span>Descuento</span><span>-$${Number(venta.descuento).toFixed(2)}</span></div>` : ''}
+      ${Number(venta.descuento) !== 0 ? `<div style="display:flex;justify-content:space-between"><span>${Number(venta.descuento) > 0 ? 'Descuento' : 'Recargo'}</span><span>${Number(venta.descuento) > 0 ? '-' : '+'}$${Math.abs(Number(venta.descuento)).toFixed(2)}</span></div>` : ''}
       <div style="display:flex;justify-content:space-between" class="bold total"><span>TOTAL</span><span>$${Number(venta.total).toFixed(2)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-top:2px"><span>Pago</span><span>${metodosTexto}</span></div>
       <hr><div class="center" style="color:#888;font-size:11px">¡Gracias por su compra!</div>
       </body></html>
     `)
@@ -669,7 +680,8 @@ function DetalleVenta({ venta, onVolver }) {
               <FilaInfo label="Fecha" valor={fmtFecha(venta.created_at)} />
               <FilaInfo label="Hora" valor={fmtHora(venta.created_at)} />
               <FilaInfo label="Vendedor" valor={venta.usuarios?.email?.split('@')[0] || '—'} />
-              <FilaInfo label="Cliente" valor={contactoActual?.nombre || 'Mostrador'} />
+              <FilaInfo label="Cliente" valor={venta.clientes?.nombre || 'Sin cliente'} />
+              <FilaInfo label="Entrega" valor={contactoActual?.nombre || 'Mostrador'} />
               {contactoActual?.telefono && <FilaInfo label="Teléfono" valor={contactoActual.telefono} />}
 
               {dirActual && (
@@ -746,7 +758,13 @@ function DetalleVenta({ venta, onVolver }) {
             <h3 style={{ margin: '0 0 1rem', fontSize: '15px', color: '#1a1a2e' }}>Resumen</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <FilaInfo label="Subtotal" valor={fmt(venta.subtotal)} />
-              {Number(venta.descuento) > 0 && <FilaInfo label="Descuento" valor={`-${fmt(venta.descuento)}`} color="#e53e3e" />}
+              {Number(venta.descuento) !== 0 && (
+                <FilaInfo
+                  label={Number(venta.descuento) > 0 ? 'Descuento' : 'Recargo'}
+                  valor={`${Number(venta.descuento) > 0 ? '-' : '+'}${fmt(Math.abs(venta.descuento))}`}
+                  color={Number(venta.descuento) > 0 ? '#e53e3e' : '#0C447C'}
+                />
+              )}
               <FilaInfo label="Total" valor={fmt(venta.total)} bold color="#f97316" />
               {venta.pagos?.map((p, i) => (
                 <FilaInfo key={i} label={METODOS[p.metodo]?.label || p.metodo} valor={fmt(p.monto)} color={METODOS[p.metodo]?.color} />

@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 
-const hoy = new Date().toISOString().split('T')[0]
+const hoy = () => {
+  const d = new Date()
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().split('T')[0]
+}
 
 const primerDiaMes = () => {
   const d = new Date()
@@ -26,8 +29,9 @@ const nombreMes = key => {
 
 export default function Reportes() {
   const [desde, setDesde]                       = useState(primerDiaMes())
-  const [hasta, setHasta]                       = useState(hoy)
+  const [hasta, setHasta]                       = useState(hoy())
   const [datos, setDatos]                       = useState(null)
+  const [porDiaLive, setPorDiaLive]             = useState([])
   const [porDiaSicar, setPorDiaSicar]           = useState(null)
   const [resumenSicar, setResumenSicar]         = useState(null)
   const [pagosSicar, setPagosSicar]             = useState(null)
@@ -45,8 +49,8 @@ export default function Reportes() {
       const { data, error } = await supabase
         .from('ventas')
         .select('id, total, estado, created_at')
-        .gte('created_at', `${d}T00:00:00`)
-        .lte('created_at', `${h}T23:59:59`)
+        .gte('created_at', new Date(`${d}T00:00:00`).toISOString())
+        .lte('created_at', new Date(`${h}T23:59:59`).toISOString())
         .order('created_at', { ascending: false })
         .range(idx, idx + 999)
       if (error || !data || data.length === 0) break
@@ -59,6 +63,20 @@ export default function Reportes() {
     const total       = completadas.reduce((s, v) => s + Number(v.total), 0)
     const promedio    = completadas.length > 0 ? total / completadas.length : 0
     setDatos({ total_ventas: completadas.length, total_canceladas: canceladas.length, monto_total: total, ticket_promedio: promedio })
+
+    const pad = n => String(n).padStart(2, '0')
+    const fechaLocal = iso => {
+      const dt = new Date(iso)
+      return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`
+    }
+    const grupos = {}
+    completadas.forEach(v => {
+      const f = fechaLocal(v.created_at)
+      if (!grupos[f]) grupos[f] = { tickets: 0, ventas: 0 }
+      grupos[f].tickets++
+      grupos[f].ventas += Number(v.total)
+    })
+    setPorDiaLive(Object.entries(grupos).map(([fecha, d]) => ({ fecha, tickets: d.tickets, ventas: d.ventas })))
     setCargando(false)
   }
 
@@ -81,7 +99,7 @@ export default function Reportes() {
 
   async function cargarResumenSicar(d = desde, h = hasta) {
     const { data, error } = await supabase.rpc('reporte_estado_resultados', {
-      fecha_desde: `${d}T00:00:00`, fecha_hasta: `${h}T23:59:59`
+      fecha_desde: new Date(`${d}T00:00:00`).toISOString(), fecha_hasta: new Date(`${h}T23:59:59`).toISOString()
     })
     if (error || !data) { setResumenSicar(null); return }
     const ventas_total = data.reduce((s, m) => s + Number(m.ventas || 0), 0)
@@ -149,24 +167,47 @@ export default function Reportes() {
   }, [])
 
   const setHoy = () => {
-    setDesde(hoy); setHasta(hoy)
-    cargarReporte(hoy, hoy); cargarPorDiaSicar(hoy, hoy)
-    cargarResumenSicar(hoy, hoy); cargarPagosSicar(hoy, hoy); cargarCanceladasSicar(hoy, hoy)
+    const h = hoy()
+    setDesde(h); setHasta(h)
+    cargarReporte(h, h); cargarPorDiaSicar(h, h)
+    cargarResumenSicar(h, h); cargarPagosSicar(h, h); cargarCanceladasSicar(h, h)
   }
 
   const setMes = () => {
-    const d = primerDiaMes(); setDesde(d); setHasta(hoy)
-    cargarReporte(d, hoy); cargarPorDiaSicar(d, hoy)
-    cargarResumenSicar(d, hoy); cargarPagosSicar(d, hoy); cargarCanceladasSicar(d, hoy)
+    const d = primerDiaMes(), h = hoy(); setDesde(d); setHasta(h)
+    cargarReporte(d, h); cargarPorDiaSicar(d, h)
+    cargarResumenSicar(d, h); cargarPagosSicar(d, h); cargarCanceladasSicar(d, h)
   }
 
   const consultar = () => {
     cargarReporte(); cargarPorDiaSicar(); cargarResumenSicar(); cargarPagosSicar(); cargarCanceladasSicar()
   }
 
-  const sicarTotales = porDiaSicar && porDiaSicar.length > 0
-    ? { tickets: porDiaSicar.reduce((s, d) => s + d.tickets, 0), ventas: porDiaSicar.reduce((s, d) => s + Number(d.ventas), 0) }
+  const porDiaCombinado = (() => {
+    const map = {}
+    ;(porDiaSicar || []).forEach(d => {
+      if (!map[d.fecha]) map[d.fecha] = { tickets: 0, ventas: 0 }
+      map[d.fecha].tickets += d.tickets
+      map[d.fecha].ventas  += Number(d.ventas)
+    })
+    ;(porDiaLive || []).forEach(d => {
+      if (!map[d.fecha]) map[d.fecha] = { tickets: 0, ventas: 0 }
+      map[d.fecha].tickets += d.tickets
+      map[d.fecha].ventas  += Number(d.ventas)
+    })
+    return Object.entries(map)
+      .map(([fecha, d]) => ({ fecha, tickets: d.tickets, ventas: d.ventas }))
+      .sort((a, b) => b.fecha.localeCompare(a.fecha))
+  })()
+
+  const totalesDia = porDiaCombinado.length > 0
+    ? {
+        tickets: porDiaCombinado.reduce((s, d) => s + d.tickets, 0),
+        ventas:  porDiaCombinado.reduce((s, d) => s + Number(d.ventas), 0),
+      }
     : null
+
+  const canceladasDia = (canceladasSicar?.canceladas || 0) + (datos?.total_canceladas || 0)
 
   const tarjetas = vista === 'anual' && totalHistorico
     ? [
@@ -182,12 +223,12 @@ export default function Reportes() {
         { label: 'Utilidad',        valor: fmt(resumenSicar.utilidad), color: '#f97316' },
         { label: 'Margen',          valor: `${resumenSicar.margen.toFixed(1)}%`, color: '#534AB7' },
       ]
-    : vista === 'dia' && sicarTotales
+    : vista === 'dia' && totalesDia
     ? [
-        { label: 'Tickets (SICAR)', valor: sicarTotales.tickets, color: '#1D9E75' },
-        { label: 'Ventas (SICAR)',  valor: fmt(sicarTotales.ventas), color: '#f97316' },
-        { label: 'Ticket promedio', valor: fmt(sicarTotales.ventas / (sicarTotales.tickets || 1)), color: '#534AB7' },
-        { label: 'Canceladas',      valor: canceladasSicar?.canceladas ?? 0, color: '#e53e3e' },
+        { label: 'Tickets',         valor: totalesDia.tickets, color: '#1D9E75' },
+        { label: 'Ventas',          valor: fmt(totalesDia.ventas), color: '#f97316' },
+        { label: 'Ticket promedio', valor: fmt(totalesDia.ventas / (totalesDia.tickets || 1)), color: '#534AB7' },
+        { label: 'Canceladas',      valor: canceladasDia, color: '#e53e3e' },
       ]
     : vista === 'pagos' && pagosSicar
     ? [
@@ -268,14 +309,17 @@ export default function Reportes() {
               ))}
             </div>
           )}
-          {!cargando && (vista === 'resultados' || vista === 'dia' || vista === 'pagos') && (
+          {!cargando && vista === 'dia' && (
+            <p style={{ margin: '-0.75rem 0 1.25rem', fontSize: '12px', color: '#aaa' }}>* Incluye historial cargado de SICAR + ventas registradas en el POS</p>
+          )}
+          {!cargando && (vista === 'resultados' || vista === 'pagos') && (
             <p style={{ margin: '-0.75rem 0 1.25rem', fontSize: '12px', color: '#aaa' }}>* Datos tomados del reporte de SICAR</p>
           )}
         </>
       )}
 
       {/* Vista por día */}
-      {vista === 'dia' && !cargando && porDiaSicar && (
+      {vista === 'dia' && !cargando && porDiaCombinado.length > 0 && (
         <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
@@ -286,7 +330,7 @@ export default function Reportes() {
               </tr>
             </thead>
             <tbody>
-              {porDiaSicar.map(d => (
+              {porDiaCombinado.map(d => (
                 <tr key={d.fecha} style={{ borderTop: '1px solid #f0f0f0' }}>
                   <td style={td}>{fmtFecha(d.fecha)}</td>
                   <td style={{ ...td, textAlign: 'right' }}>{d.tickets}</td>
@@ -297,11 +341,16 @@ export default function Reportes() {
             <tfoot>
               <tr style={{ background: '#f9f9f9', borderTop: '2px solid #e0e0e0' }}>
                 <td style={{ ...td, fontWeight: '700' }}>Total</td>
-                <td style={{ ...td, textAlign: 'right', fontWeight: '700' }}>{porDiaSicar.reduce((s, d) => s + d.tickets, 0)}</td>
-                <td style={{ ...td, textAlign: 'right', fontWeight: '700', color: '#f97316' }}>{fmt(porDiaSicar.reduce((s, d) => s + Number(d.ventas), 0))}</td>
+                <td style={{ ...td, textAlign: 'right', fontWeight: '700' }}>{porDiaCombinado.reduce((s, d) => s + d.tickets, 0)}</td>
+                <td style={{ ...td, textAlign: 'right', fontWeight: '700', color: '#f97316' }}>{fmt(porDiaCombinado.reduce((s, d) => s + Number(d.ventas), 0))}</td>
               </tr>
             </tfoot>
           </table>
+        </div>
+      )}
+      {vista === 'dia' && !cargando && porDiaCombinado.length === 0 && (
+        <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', padding: '2rem' }}>
+          <p style={{ margin: 0, color: '#888', textAlign: 'center' }}>Sin ventas en el período seleccionado.</p>
         </div>
       )}
 
@@ -371,7 +420,7 @@ function EstadoResultados({ desde, hasta }) {
     async function cargar() {
       setCargando(true)
       const { data, error } = await supabase.rpc('reporte_estado_resultados', {
-        fecha_desde: `${desde}T00:00:00`, fecha_hasta: `${hasta}T23:59:59`
+        fecha_desde: new Date(`${desde}T00:00:00`).toISOString(), fecha_hasta: new Date(`${hasta}T23:59:59`).toISOString()
       })
       if (error) { setCargando(false); return }
       const meses = (data || []).map(d => ({

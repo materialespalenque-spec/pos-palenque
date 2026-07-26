@@ -8,6 +8,13 @@ const fmt = n => new Intl.NumberFormat('es-MX', {
   style: 'currency', currency: 'MXN'
 }).format(n || 0)
 
+const METODOS_TICKET = {
+  efectivo:      '💵 Efectivo',
+  tarjeta:       '💳 Tarjeta',
+  transferencia: '🏦 Transferencia',
+  credito:       '📋 Crédito',
+}
+
 const generarFolio = () => {
   const now = new Date()
   const pad = n => String(n).padStart(2, '0')
@@ -39,6 +46,14 @@ export default function Caja() {
   const [contacto, setContacto]               = useState(null)
   const [busqContacto, setBusqContacto]       = useState('')
   const [contactos, setContactos]             = useState([])
+  const [creandoContacto, setCreandoContacto] = useState(false)
+  const [nuevoContacto, setNuevoContacto]     = useState({ nombre: '', telefono: '', colonia: '', direccion: '' })
+  const [guardandoContacto, setGuardandoContacto] = useState(false)
+  const [mostrarFlete, setMostrarFlete]       = useState(false)
+  const [nuevoFlete, setNuevoFlete]           = useState({ descripcion: 'Flete foráneo', monto: '' })
+  const [cliente, setCliente]                 = useState(null)
+  const [busqCliente, setBusqCliente]         = useState('')
+  const [clientesResultados, setClientesResultados] = useState([])
   const [procesando, setProcesando]           = useState(false)
   const [ventaExitosa, setVentaExitosa]       = useState(null)
   const [error, setError]                     = useState(null)
@@ -101,6 +116,21 @@ useEffect(() => {
     return () => clearTimeout(timer)
   }, [busqContacto])
 
+  // Buscar clientes (facturación / crédito)
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (!busqCliente.trim()) { setClientesResultados([]); return }
+      const { data } = await supabase
+        .from('clientes')
+        .select('id, nombre, rfc, telefono, credito_limite, saldo')
+        .eq('activo', true)
+        .ilike('nombre', `%${busqCliente}%`)
+        .limit(5)
+      setClientesResultados(data || [])
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [busqCliente])
+
   const agregarProducto = (p) => {
     // Precio neto = precio_venta * 1.16, redondeado
     const precio = Math.round(p.precio_venta * 1.16 * 100) / 100
@@ -137,6 +167,48 @@ useEffect(() => {
     setCarrito(prev => prev.map(i => i.id === id ? { ...i, descuento: Math.min(descuento, 100) } : i))
   }
 
+  const abrirCrearContacto = () => {
+    setNuevoContacto({ nombre: busqContacto, telefono: '', colonia: '', direccion: '' })
+    setCreandoContacto(true)
+  }
+
+  const crearContactoRapido = async () => {
+    if (!nuevoContacto.nombre.trim()) return
+    setGuardandoContacto(true)
+    const { data, error } = await supabase
+      .from('contactos')
+      .insert({
+        negocio_id: NEGOCIO_ID,
+        nombre:     nuevoContacto.nombre.trim(),
+        telefono:   nuevoContacto.telefono.trim() || null,
+        colonia:    nuevoContacto.colonia.trim() || null,
+        direccion:  nuevoContacto.direccion.trim() || null,
+      })
+      .select().single()
+    setGuardandoContacto(false)
+    if (!error && data) {
+      setContacto(data)
+      setCreandoContacto(false)
+      setNuevoContacto({ nombre: '', telefono: '', colonia: '', direccion: '' })
+      setBusqContacto('')
+      setContactos([])
+    }
+  }
+
+  const agregarFlete = () => {
+    const monto = parseFloat(nuevoFlete.monto)
+    if (!monto || monto <= 0) return
+    const descripcion = nuevoFlete.descripcion.trim() || 'Flete foráneo'
+    setCarrito(prev => [...prev, {
+      id: `flete-${Date.now()}`, nombre: descripcion, clave: null, clave_alterna: null,
+      precio: monto, costo: 0, factor: 1, existencia: null,
+      cantidad: 1, descuento: 0, esServicio: true,
+    }])
+    setNuevoFlete({ descripcion: 'Flete foráneo', monto: '' })
+    setMostrarFlete(false)
+    inputRef.current?.focus()
+  }
+
   const quitarProducto = (id) => {
     setCarrito(prev => prev.filter(i => i.id !== id))
     inputRef.current?.focus()
@@ -147,13 +219,15 @@ useEffect(() => {
     const nueva = {
       id: Date.now(),
       hora: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
-      carrito: [...carrito], contacto, descuentoGlobal,
+      carrito: [...carrito], contacto, cliente, descuentoGlobal,
     }
     const nuevaLista = [...enEspera, nueva]
     setEnEspera(nuevaLista)
     localStorage.setItem('pos_en_espera', JSON.stringify(nuevaLista))
     setCarrito([]); localStorage.removeItem('pos_carrito')
-    setContacto(null); setBusqContacto(''); setDescuentoGlobal(0)
+    setContacto(null); setBusqContacto(''); setCliente(null); setBusqCliente(''); setDescuentoGlobal(0)
+    setCreandoContacto(false)
+    setMostrarFlete(false)
     cantRefs.current = {}
     inputRef.current?.focus()
   }
@@ -162,6 +236,7 @@ useEffect(() => {
     if (carrito.length > 0) ponerEnEspera()
     setCarrito(item.carrito)
     setContacto(item.contacto)
+    setCliente(item.cliente || null)
     setDescuentoGlobal(item.descuentoGlobal || 0)
     const nuevaLista = enEspera.filter(e => e.id !== item.id)
     setEnEspera(nuevaLista)
@@ -195,9 +270,15 @@ useEffect(() => {
   const subtotal      = Math.round((subtotalBruto - descItems) * 100) / 100
   const total         = subtotal
   const cambio        = Math.max(0, Number(montoPago) - total)
+  const excedeCredito = metodoPago === 'credito' && cliente && Number(cliente.credito_limite) > 0
+    && (Number(cliente.saldo) + total) > Number(cliente.credito_limite)
 
   const procesarVenta = async () => {
     if (carrito.length === 0) return
+    if (metodoPago === 'credito' && !cliente) {
+      setError('Selecciona un cliente para ventas a crédito.')
+      return
+    }
     setProcesando(true)
     setError(null)
     try {
@@ -215,6 +296,7 @@ useEffect(() => {
           total:             Math.round(total * 100) / 100,
           estado:            'completada',
           contacto_id:       contacto?.id || null,
+          cliente_id:        cliente?.id || null,
           direccion_entrega: contacto?.direccion || null,
         })
         .select().single()
@@ -224,7 +306,7 @@ useEffect(() => {
         const descUnit = i.precio * (i.descuento / 100)
         return {
           venta_id:        venta.id,
-          producto_id:     i.id,
+          producto_id:     i.esServicio ? null : i.id,
           nombre_producto: i.nombre,
           cantidad:        i.cantidad,
           precio_unitario: i.precio,
@@ -242,10 +324,12 @@ useEffect(() => {
       })
       if (ePago) throw new Error(ePago.message)
 
-      setVentaExitosa({ folio, total, cambio, contacto, items: [...carrito], descItems })
+      setVentaExitosa({ folio, total, cambio, contacto, cliente, metodoPago, items: [...carrito], descItems })
       setCarrito([]); localStorage.removeItem('pos_carrito')
       setDescuentoGlobal(0); setMontoPago('')
-      setContacto(null); setBusqContacto(''); setMetodoPago('efectivo')
+      setContacto(null); setBusqContacto(''); setCliente(null); setBusqCliente(''); setMetodoPago('efectivo')
+      setCreandoContacto(false)
+      setMostrarFlete(false)
       cantRefs.current = {}
     } catch (err) {
       setError(err.message)
@@ -296,7 +380,38 @@ useEffect(() => {
                 color: 'white', border: 'none', cursor: 'pointer'
               }}>📋 En espera ({enEspera.length})</button>
             )}
+            <button onClick={() => setMostrarFlete(!mostrarFlete)} style={{
+              padding: '6px 14px', borderRadius: '6px', fontSize: '13px', fontWeight: '600',
+              background: mostrarFlete ? '#1a1a2e' : '#0C447C',
+              color: 'white', border: 'none', cursor: 'pointer'
+            }}>🚚 + Flete/Servicio</button>
           </div>
+
+          {/* Mini-formulario de flete/servicio */}
+          {mostrarFlete && (
+            <div style={{ marginTop: '8px', padding: '10px', borderRadius: '8px', background: '#fafafa', border: '1px solid #e0e0e0' }}>
+              <input type="text" placeholder="Descripción" value={nuevoFlete.descripcion}
+                onChange={e => setNuevoFlete(prev => ({ ...prev, descripcion: e.target.value }))}
+                style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', boxSizing: 'border-box', marginBottom: '6px' }}
+              />
+              <input type="number" placeholder="Monto" value={nuevoFlete.monto} autoFocus
+                onChange={e => setNuevoFlete(prev => ({ ...prev, monto: e.target.value }))}
+                onKeyDown={e => { if (e.key === 'Enter') agregarFlete() }}
+                style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', boxSizing: 'border-box', marginBottom: '8px' }}
+              />
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button onClick={agregarFlete} disabled={!nuevoFlete.monto || parseFloat(nuevoFlete.monto) <= 0} style={{
+                  flex: 1, padding: '8px', borderRadius: '6px', border: 'none', fontSize: '13px', fontWeight: '600',
+                  background: parseFloat(nuevoFlete.monto) > 0 ? '#0C447C' : '#e0e0e0',
+                  color: parseFloat(nuevoFlete.monto) > 0 ? 'white' : '#aaa',
+                  cursor: parseFloat(nuevoFlete.monto) > 0 ? 'pointer' : 'not-allowed'
+                }}>+ Agregar al carrito</button>
+                <button onClick={() => setMostrarFlete(false)} style={{
+                  padding: '8px 14px', borderRadius: '6px', border: '1px solid #ddd', background: 'white', fontSize: '13px', cursor: 'pointer'
+                }}>Cancelar</button>
+              </div>
+            </div>
+          )}
 
           {/* Panel ventas en espera */}
           {mostrarEspera && enEspera.length > 0 && (
@@ -311,6 +426,7 @@ useEffect(() => {
                     <p style={{ margin: 0, fontSize: '13px', fontWeight: '600' }}>🕐 {e.hora} — {e.carrito.length} producto{e.carrito.length > 1 ? 's' : ''}</p>
                     <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#888' }}>{e.carrito.slice(0, 2).map(i => i.nombre).join(', ')}{e.carrito.length > 2 ? '...' : ''}</p>
                     {e.contacto && <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#534AB7' }}>📍 {e.contacto.nombre}</p>}
+                    {e.cliente && <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#0C447C' }}>🧾 {e.cliente.nombre}</p>}
                     <p style={{ margin: '2px 0 0', fontSize: '12px', fontWeight: '700', color: '#f97316' }}>
                       {fmt(Math.round(e.carrito.reduce((s, i) => s + i.precio * i.cantidad * (1 - i.descuento / 100), 0) * 100) / 100)}
                     </p>
@@ -392,7 +508,7 @@ useEffect(() => {
                       : {}
                       })() }}>
                         <td style={td}>
-                          <p style={{ margin: 0, fontSize: '13px', fontWeight: '600' }}>{item.nombre}</p>
+                          <p style={{ margin: 0, fontSize: '13px', fontWeight: '600' }}>{item.esServicio && '🚚 '}{item.nombre}</p>
                           <p style={{ margin: 0, fontSize: '11px', color: '#888' }}>
                             {item.clave && <span style={{ color: '#534AB7', fontWeight: '600' }}>{item.clave}</span>}
                             {item.clave_alterna && item.clave_alterna !== item.clave && <span style={{ color: '#1D9E75', fontWeight: '600' }}> · {item.clave_alterna}</span>}
@@ -433,8 +549,8 @@ useEffect(() => {
                           </div>
                         </td>
                         <td style={{ ...td, textAlign: 'right', fontSize: '12px', fontWeight: '600',
-                          color: item.existencia <= 0 ? '#e53e3e' : item.existencia < item.cantidad ? '#BA7517' : '#1D9E75' }}>
-                          {item.existencia}
+                          color: item.esServicio ? '#aaa' : item.existencia <= 0 ? '#e53e3e' : item.existencia < item.cantidad ? '#BA7517' : '#1D9E75' }}>
+                          {item.esServicio ? '—' : item.existencia}
                         </td>
                         <td style={{ ...td, textAlign: 'right' }}>
                           <input
@@ -443,7 +559,7 @@ useEffect(() => {
                             onBlur={e => {
                               const val = parseFloat(e.target.value.replace(/[$,]/g, ''))
                               if (!isNaN(val) && val > 0) {
-                                const descuento = Math.max(0, Math.round((1 - val / item.precio) * 10000) / 100)
+                                const descuento = Math.round((1 - val / item.precio) * 10000) / 100
                                 actualizarDescuento(item.id, descuento)
                               } else {
                                 e.target.value = item.precio.toFixed(2)
@@ -457,7 +573,8 @@ useEffect(() => {
                           />
                         </td>
                         <td style={{ ...td, textAlign: 'center' }}>
-                          <input type="number" min="0" max="100" step="1" value={item.descuento}
+                          <input type="number" min="-1000" max="100" step="1" value={item.descuento}
+                            title="Negativo = recargo (ej. flete o precio foráneo)"
                             onChange={e => actualizarDescuento(item.id, parseFloat(e.target.value) || 0)}
                             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); inputRef.current?.focus() } }}
                             onFocus={e => e.target.select()}
@@ -520,13 +637,13 @@ useEffect(() => {
                 <p style={{ margin: 0, fontSize: '13px', fontWeight: '600' }}>{contacto.nombre}</p>
                 <p style={{ margin: 0, fontSize: '12px', color: '#888' }}>{contacto.colonia} — {contacto.telefono}</p>
               </div>
-              <button onClick={() => { setContacto(null); setBusqContacto('') }}
+              <button onClick={() => { setContacto(null); setBusqContacto(''); setCreandoContacto(false) }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#e53e3e', fontSize: '18px' }}>✕</button>
             </div>
           ) : (
             <div style={{ position: 'relative' }}>
               <input type="text" placeholder="Buscar contacto..." value={busqContacto}
-                onChange={e => setBusqContacto(e.target.value)}
+                onChange={e => { setBusqContacto(e.target.value); setCreandoContacto(false) }}
                 style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', boxSizing: 'border-box' }}
               />
               {contactos.length > 0 && (
@@ -542,6 +659,93 @@ useEffect(() => {
                     </div>
                   ))}
                 </div>
+              )}
+              {busqContacto.trim() && contactos.length === 0 && !creandoContacto && (
+                <button onClick={abrirCrearContacto} style={{
+                  marginTop: '8px', width: '100%', padding: '8px', borderRadius: '6px',
+                  background: '#f0fdf4', color: '#1D9E75', border: '1px dashed #bbf7d0',
+                  fontSize: '12px', fontWeight: '600', cursor: 'pointer'
+                }}>+ Crear contacto "{busqContacto}"</button>
+              )}
+              {creandoContacto && (
+                <div style={{ marginTop: '8px', padding: '10px', borderRadius: '8px', background: '#fafafa', border: '1px solid #e0e0e0' }}>
+                  <input type="text" placeholder="Nombre *" value={nuevoContacto.nombre}
+                    onChange={e => setNuevoContacto(prev => ({ ...prev, nombre: e.target.value }))}
+                    autoFocus
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', boxSizing: 'border-box', marginBottom: '6px' }}
+                  />
+                  <input type="text" placeholder="Teléfono" value={nuevoContacto.telefono}
+                    onChange={e => setNuevoContacto(prev => ({ ...prev, telefono: e.target.value }))}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', boxSizing: 'border-box', marginBottom: '6px' }}
+                  />
+                  <input type="text" placeholder="Colonia" value={nuevoContacto.colonia}
+                    onChange={e => setNuevoContacto(prev => ({ ...prev, colonia: e.target.value }))}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', boxSizing: 'border-box', marginBottom: '6px' }}
+                  />
+                  <textarea placeholder="Dirección (calle, número, referencias...)" value={nuevoContacto.direccion}
+                    onChange={e => setNuevoContacto(prev => ({ ...prev, direccion: e.target.value }))}
+                    rows={3}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', boxSizing: 'border-box', marginBottom: '8px', resize: 'vertical', fontFamily: 'inherit' }}
+                  />
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button onClick={crearContactoRapido} disabled={!nuevoContacto.nombre.trim() || guardandoContacto} style={{
+                      flex: 1, padding: '8px', borderRadius: '6px', border: 'none', fontSize: '13px', fontWeight: '600',
+                      background: nuevoContacto.nombre.trim() ? '#1D9E75' : '#e0e0e0',
+                      color: nuevoContacto.nombre.trim() ? 'white' : '#aaa',
+                      cursor: nuevoContacto.nombre.trim() ? 'pointer' : 'not-allowed'
+                    }}>{guardandoContacto ? 'Guardando...' : '💾 Guardar y usar'}</button>
+                    <button onClick={() => setCreandoContacto(false)} style={{
+                      padding: '8px 14px', borderRadius: '6px', border: '1px solid #ddd', background: 'white', fontSize: '13px', cursor: 'pointer'
+                    }}>Cancelar</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Cliente (facturación / crédito) */}
+        <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', padding: '1rem' }}>
+          <p style={{ margin: '0 0 8px', fontSize: '12px', color: '#888', fontWeight: '600' }}>CLIENTE (FACTURACIÓN / CRÉDITO)</p>
+          {cliente ? (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <p style={{ margin: 0, fontSize: '13px', fontWeight: '600' }}>{cliente.nombre}</p>
+                  <p style={{ margin: 0, fontSize: '12px', color: '#888' }}>{cliente.rfc || 'Sin RFC'} — {cliente.telefono || 'Sin teléfono'}</p>
+                </div>
+                <button onClick={() => { setCliente(null); setBusqCliente('') }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#e53e3e', fontSize: '18px' }}>✕</button>
+              </div>
+              {Number(cliente.credito_limite) > 0 && (
+                <p style={{ margin: '6px 0 0', fontSize: '12px', color: excedeCredito ? '#e53e3e' : '#888' }}>
+                  Saldo: {fmt(cliente.saldo)} / Límite: {fmt(cliente.credito_limite)}
+                  {excedeCredito && ' ⚠️ Esta venta excede el límite de crédito'}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div style={{ position: 'relative' }}>
+              <input type="text" placeholder="Buscar cliente por nombre..." value={busqCliente}
+                onChange={e => setBusqCliente(e.target.value)}
+                style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', boxSizing: 'border-box' }}
+              />
+              {clientesResultados.length > 0 && (
+                <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'white', border: '1px solid #e0e0e0', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 100, marginTop: '4px' }}>
+                  {clientesResultados.map(c => (
+                    <div key={c.id} onClick={() => { setCliente(c); setClientesResultados([]); setBusqCliente('') }}
+                      style={{ padding: '8px 1rem', cursor: 'pointer', borderBottom: '1px solid #f0f0f0' }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#f9f9f9'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'white'}
+                    >
+                      <p style={{ margin: 0, fontSize: '13px', fontWeight: '600' }}>{c.nombre}</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#888' }}>{c.rfc || 'Sin RFC'} — Saldo: {fmt(c.saldo)}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {metodoPago === 'credito' && (
+                <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#e53e3e' }}>Requerido para ventas a crédito.</p>
               )}
             </div>
           )}
@@ -567,10 +771,10 @@ useEffect(() => {
                 style={{ width: '60px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px' }}
               />
             </div>
-            {descItems > 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#e53e3e' }}>
-                <span>Descuento</span>
-                <span>-{fmt(descItems)}</span>
+            {descItems !== 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: descItems > 0 ? '#e53e3e' : '#0C447C' }}>
+                <span>{descItems > 0 ? 'Descuento' : 'Recargo (foránea/flete)'}</span>
+                <span>{descItems > 0 ? '-' : '+'}{fmt(Math.abs(descItems))}</span>
               </div>
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '20px', fontWeight: '700', borderTop: '2px solid #e0e0e0', paddingTop: '8px', marginTop: '4px' }}>
@@ -652,11 +856,11 @@ useEffect(() => {
           </p>
         )}
 
-        <button onClick={procesarVenta} disabled={carrito.length === 0 || procesando} style={{
+        <button onClick={procesarVenta} disabled={carrito.length === 0 || procesando || (metodoPago === 'credito' && !cliente)} style={{
           padding: '16px', borderRadius: '10px', fontSize: '18px', fontWeight: '700',
-          background: carrito.length > 0 && !procesando ? '#f97316' : '#e0e0e0',
-          color: carrito.length > 0 && !procesando ? 'white' : '#aaa',
-          border: 'none', cursor: carrito.length > 0 && !procesando ? 'pointer' : 'not-allowed',
+          background: carrito.length > 0 && !procesando && !(metodoPago === 'credito' && !cliente) ? '#f97316' : '#e0e0e0',
+          color: carrito.length > 0 && !procesando && !(metodoPago === 'credito' && !cliente) ? 'white' : '#aaa',
+          border: 'none', cursor: carrito.length > 0 && !procesando && !(metodoPago === 'credito' && !cliente) ? 'pointer' : 'not-allowed',
         }}>
           {procesando ? '⏳ Procesando...' : `💰 Cobrar ${fmt(total)}`}
         </button>
@@ -687,6 +891,12 @@ function TicketVenta({ venta, onNueva }) {
         </div>
         <div style={{ borderTop: '1px dashed #ccc', borderBottom: '1px dashed #ccc', padding: '6px 0', margin: '8px 0' }}>
           <p style={{ margin: 0 }}>Folio: <strong>{venta.folio}</strong></p>
+          {venta.cliente && (
+            <>
+              <p style={{ margin: '4px 0 0' }}>Cliente: <strong>{venta.cliente.nombre}</strong></p>
+              {venta.cliente.rfc && <p style={{ margin: '2px 0 0' }}>RFC: {venta.cliente.rfc}</p>}
+            </>
+          )}
           {venta.contacto && (
           <>
             <p style={{ margin: '4px 0 0' }}>Entrega: <strong>{venta.contacto.nombre}</strong></p>
@@ -695,40 +905,35 @@ function TicketVenta({ venta, onNueva }) {
           </>
         )}
         </div>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: 'left', paddingBottom: '4px' }}>Producto</th>
-              <th style={{ textAlign: 'right' }}>Cant</th>
-              <th style={{ textAlign: 'right' }}>Precio</th>
-              <th style={{ textAlign: 'right' }}>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {venta.items.map((item, i) => {
-              const precioFinal = Math.round(item.precio * (1 - item.descuento / 100) * 100) / 100
-              const totalItem   = Math.round(precioFinal * item.cantidad * 100) / 100
-              return (
-                <tr key={i} style={{ borderTop: '1px dotted #eee' }}>
-                  <td style={{ paddingTop: '4px', paddingRight: '4px' }}>{item.nombre}</td>
-                  <td style={{ textAlign: 'right', paddingTop: '4px' }}>{item.cantidad}</td>
-                  <td style={{ textAlign: 'right', paddingTop: '4px' }}>{new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2 }).format(precioFinal)}</td>
-                  <td style={{ textAlign: 'right', paddingTop: '4px' }}>{new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2 }).format(totalItem)}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+        <div style={{ marginTop: '8px' }}>
+          {venta.items.map((item, i) => {
+            const precioFinal = Math.round(item.precio * (1 - item.descuento / 100) * 100) / 100
+            const totalItem   = Math.round(precioFinal * item.cantidad * 100) / 100
+            return (
+              <div key={i} style={{ marginTop: i === 0 ? 0 : '7px', paddingBottom: '7px', borderBottom: i < venta.items.length - 1 ? '1px dotted #eee' : 'none' }}>
+                <div style={{ fontWeight: '600' }}>{item.nombre}</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#555', marginTop: '2px' }}>
+                  <span>{item.cantidad} x {new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2 }).format(precioFinal)}</span>
+                  <span style={{ fontWeight: '600' }}>{new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2 }).format(totalItem)}</span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
         <div style={{ borderTop: '1px dashed #ccc', marginTop: '8px', paddingTop: '8px' }}>
-          {venta.descItems > 0 && (
+          {venta.descItems !== 0 && (
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
-              <span>Descuento</span>
-              <span>-{new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(venta.descItems)}</span>
+              <span>{venta.descItems > 0 ? 'Descuento' : 'Recargo'}</span>
+              <span>{venta.descItems > 0 ? '-' : '+'}{new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(Math.abs(venta.descItems))}</span>
             </div>
           )}
           <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: '700', fontSize: '14px' }}>
             <span>TOTAL</span>
             <span>{new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(venta.total)}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#888', marginTop: '2px' }}>
+            <span>Pago</span>
+            <span>{METODOS_TICKET[venta.metodoPago] || venta.metodoPago}</span>
           </div>
           {venta.cambio > 0 && (
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
