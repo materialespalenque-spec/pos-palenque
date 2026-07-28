@@ -49,7 +49,7 @@ export default function Ventas() {
     const { data, error } = await supabase
       .from('ventas')
       .select(`
-        id, folio, total, subtotal, descuento, estado, created_at,
+        id, folio, total, subtotal, descuento, recargo, estado, created_at,
         direccion_entrega,
         contactos(id, nombre, telefono, colonia, direccion),
         clientes(id, nombre, rfc, telefono, direccion),
@@ -579,8 +579,8 @@ function DetalleVenta({ venta, onVolver }) {
       <hr>
       <div>
         ${items.map((i, idx) => {
-          const precioFinal = Math.round(i.precio_unitario * 100) / 100
           const totalItem   = Math.round(i.subtotal * 100) / 100
+          const precioFinal = Math.round((totalItem / Number(i.cantidad)) * 100) / 100
           return `<div style="margin-top:${idx === 0 ? 0 : '7px'};padding-bottom:7px;${idx < items.length - 1 ? 'border-bottom:1px dotted #eee' : ''}">
             <div style="font-weight:600">${i.nombre_producto}</div>
             <div style="display:flex;justify-content:space-between;color:#555;margin-top:2px">
@@ -591,8 +591,8 @@ function DetalleVenta({ venta, onVolver }) {
         }).join('')}
       </div>
       <hr>
-      ${Number(venta.descuento) !== 0 ? `<div style="display:flex;justify-content:space-between"><span>${Number(venta.descuento) > 0 ? 'Descuento' : 'Recargo'}</span><span>${Number(venta.descuento) > 0 ? '-' : '+'}$${Math.abs(Number(venta.descuento)).toFixed(2)}</span></div>` : ''}
       <div style="display:flex;justify-content:space-between" class="bold total"><span>TOTAL</span><span>$${Number(venta.total).toFixed(2)}</span></div>
+      ${(Number(venta.descuento) > 0 || Number(venta.recargo) > 0) ? `<div style="font-size:10px;color:#aaa;font-style:italic;margin-top:4px">(precios de arriba ya incluyen${Number(venta.descuento) > 0 ? ` descuento de $${Number(venta.descuento).toFixed(2)}` : ''}${Number(venta.descuento) > 0 && Number(venta.recargo) > 0 ? ' y' : ''}${Number(venta.recargo) > 0 ? ` recargo de $${Number(venta.recargo).toFixed(2)}` : ''})</div>` : ''}
       <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-top:2px"><span>Pago</span><span>${metodosTexto}</span></div>
       <hr><div class="center" style="color:#888;font-size:11px">¡Gracias por su compra!</div>
       </body></html>
@@ -758,12 +758,11 @@ function DetalleVenta({ venta, onVolver }) {
             <h3 style={{ margin: '0 0 1rem', fontSize: '15px', color: '#1a1a2e' }}>Resumen</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <FilaInfo label="Subtotal" valor={fmt(venta.subtotal)} />
-              {Number(venta.descuento) !== 0 && (
-                <FilaInfo
-                  label={Number(venta.descuento) > 0 ? 'Descuento' : 'Recargo'}
-                  valor={`${Number(venta.descuento) > 0 ? '-' : '+'}${fmt(Math.abs(venta.descuento))}`}
-                  color={Number(venta.descuento) > 0 ? '#e53e3e' : '#0C447C'}
-                />
+              {Number(venta.descuento) > 0 && (
+                <FilaInfo label="Descuento" valor={`-${fmt(venta.descuento)}`} color="#e53e3e" />
+              )}
+              {Number(venta.recargo) > 0 && (
+                <FilaInfo label="Recargo" valor={`+${fmt(venta.recargo)}`} color="#0C447C" />
               )}
               <FilaInfo label="Total" valor={fmt(venta.total)} bold color="#f97316" />
               {venta.pagos?.map((p, i) => (

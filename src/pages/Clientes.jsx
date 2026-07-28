@@ -288,7 +288,7 @@ function DetalleCliente({ cliente: clienteInicial, negocioId, onVolver }) {
   async function cargar() {
     setCargando(true)
     const [{ data: v }, { data: a }, { data: c }] = await Promise.all([
-      supabase.from('ventas').select('id, folio, total, descuento, estado, created_at, pagos(metodo)').eq('cliente_id', cliente.id).order('created_at', { ascending: false }),
+      supabase.from('ventas').select('id, folio, total, descuento, recargo, estado, created_at, pagos(metodo)').eq('cliente_id', cliente.id).order('created_at', { ascending: false }),
       supabase.from('abonos').select('id, monto, metodo, referencia, notas, created_at, usuarios(email)').eq('cliente_id', cliente.id).order('created_at', { ascending: false }),
       supabase.from('clientes').select('*').eq('id', cliente.id).single(),
     ])
@@ -327,8 +327,8 @@ function DetalleCliente({ cliente: clienteInicial, negocioId, onVolver }) {
       <hr>
       <div>
         ${(items || []).map((i, idx) => {
-          const precioFinal = Math.round(i.precio_unitario * 100) / 100
           const totalItem   = Math.round(i.subtotal * 100) / 100
+          const precioFinal = Math.round((totalItem / Number(i.cantidad)) * 100) / 100
           return `<div style="margin-top:${idx === 0 ? 0 : '7px'};padding-bottom:7px;${idx < items.length - 1 ? 'border-bottom:1px dotted #eee' : ''}">
             <div style="font-weight:600">${i.nombre_producto}</div>
             <div style="display:flex;justify-content:space-between;color:#555;margin-top:2px">
@@ -339,8 +339,8 @@ function DetalleCliente({ cliente: clienteInicial, negocioId, onVolver }) {
         }).join('')}
       </div>
       <hr>
-      ${Number(venta.descuento) !== 0 ? `<div style="display:flex;justify-content:space-between;font-size:11px;color:#888"><span>${Number(venta.descuento) > 0 ? 'Descuento' : 'Recargo'}</span><span>${Number(venta.descuento) > 0 ? '-' : '+'}$${Math.abs(Number(venta.descuento)).toFixed(2)}</span></div>` : ''}
       <div style="display:flex;justify-content:space-between" class="bold total"><span>TOTAL</span><span>$${Number(venta.total).toFixed(2)}</span></div>
+      ${(Number(venta.descuento) > 0 || Number(venta.recargo) > 0) ? `<div style="font-size:10px;color:#aaa;font-style:italic;margin-top:4px">(precios de arriba ya incluyen${Number(venta.descuento) > 0 ? ` descuento de $${Number(venta.descuento).toFixed(2)}` : ''}${Number(venta.descuento) > 0 && Number(venta.recargo) > 0 ? ' y' : ''}${Number(venta.recargo) > 0 ? ` recargo de $${Number(venta.recargo).toFixed(2)}` : ''})</div>` : ''}
       <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-top:2px"><span>Pago</span><span>${metodosTexto}</span></div>
       <hr><div class="center" style="color:#888;font-size:11px">¡Gracias por su compra!</div>
       </body></html>
@@ -703,12 +703,11 @@ function DetalleVentaCliente({ venta, cliente, onVolver, onReimprimir }) {
                 {venta.estado === 'completada' ? 'Completada' : 'Cancelada'}
               </span>
             } />
-            {Number(venta.descuento) !== 0 && (
-              <FilaInfo
-                label={Number(venta.descuento) > 0 ? 'Descuento' : 'Recargo'}
-                valor={`${Number(venta.descuento) > 0 ? '-' : '+'}${fmt(Math.abs(venta.descuento))}`}
-                color={Number(venta.descuento) > 0 ? '#e53e3e' : '#0C447C'}
-              />
+            {Number(venta.descuento) > 0 && (
+              <FilaInfo label="Descuento" valor={`-${fmt(venta.descuento)}`} color="#e53e3e" />
+            )}
+            {Number(venta.recargo) > 0 && (
+              <FilaInfo label="Recargo" valor={`+${fmt(venta.recargo)}`} color="#0C447C" />
             )}
             <FilaInfo label="Total" valor={fmt(venta.total)} bold color="#f97316" />
           </div>

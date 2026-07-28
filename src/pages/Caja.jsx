@@ -51,6 +51,7 @@ export default function Caja() {
   const [guardandoContacto, setGuardandoContacto] = useState(false)
   const [mostrarFlete, setMostrarFlete]       = useState(false)
   const [nuevoFlete, setNuevoFlete]           = useState({ descripcion: 'Flete foráneo', monto: '' })
+  const [filaCarrito, setFilaCarrito]         = useState(null)
   const [cliente, setCliente]                 = useState(null)
   const [busqCliente, setBusqCliente]         = useState('')
   const [clientesResultados, setClientesResultados] = useState([])
@@ -88,8 +89,9 @@ useEffect(() => {
       const palabras = busqueda.trim().split(/\s+/)
       let query = supabase
         .from('productos')
-        .select('id, nombre, clave, codigo_barras, precio_venta, costo, factor, activo, inventario(existencia, sucursal_id)')
+        .select('id, nombre, clave, codigo_barras, precio_venta, costo, factor, activo, ventas_recientes, inventario(existencia, sucursal_id)')
         .eq('activo', true)
+        .order('ventas_recientes', { ascending: false })
         .limit(8)
       palabras.forEach(p => {
         query = query.or(`nombre.ilike.%${p}%,clave.ilike.%${p}%,codigo_barras.ilike.%${p}%`)
@@ -228,6 +230,7 @@ useEffect(() => {
     setContacto(null); setBusqContacto(''); setCliente(null); setBusqCliente(''); setDescuentoGlobal(0)
     setCreandoContacto(false)
     setMostrarFlete(false)
+    setFilaCarrito(null)
     cantRefs.current = {}
     inputRef.current?.focus()
   }
@@ -251,6 +254,40 @@ useEffect(() => {
     localStorage.setItem('pos_en_espera', JSON.stringify(nuevaLista))
   }
 
+  // Escape global: cierra búsquedas y paneles abiertos, sin tocar selecciones ya hechas
+  // Flechas: cuando no se está escribiendo en un campo, mueven la marca entre productos del carrito
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setBusqueda(''); setResultados([]); setSeleccionado(-1)
+        setMostrarEspera(false)
+        setMostrarFlete(false); setNuevoFlete({ descripcion: 'Flete foráneo', monto: '' })
+        setBusqContacto(''); setContactos([])
+        setCreandoContacto(false); setNuevoContacto({ nombre: '', telefono: '', colonia: '', direccion: '' })
+        setBusqCliente(''); setClientesResultados([])
+        setError(null)
+        setFilaCarrito(null)
+        inputRef.current?.focus()
+        return
+      }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const tag = document.activeElement?.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+        if (carrito.length === 0) return
+        e.preventDefault()
+        setFilaCarrito(prev => {
+          const idx = prev == null ? -1 : carrito.findIndex(i => i.id === prev)
+          const siguiente = e.key === 'ArrowDown'
+            ? Math.min(idx + 1, carrito.length - 1)
+            : Math.max(idx - 1, 0)
+          return carrito[siguiente]?.id ?? null
+        })
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [carrito])
+
   const handleKeyDown = (e) => {
     if (resultados.length === 0) return
     if (e.key === 'ArrowDown') { e.preventDefault(); setSeleccionado(prev => Math.min(prev + 1, resultados.length - 1)) }
@@ -267,6 +304,8 @@ useEffect(() => {
   // Cálculos — sin IVA desglosado
   const subtotalBruto = Math.round(carrito.reduce((s, i) => s + i.precio * i.cantidad, 0) * 100) / 100
   const descItems     = Math.round(carrito.reduce((s, i) => s + i.precio * i.cantidad * (i.descuento / 100), 0) * 100) / 100
+  const descuentoTotal = Math.round(carrito.reduce((s, i) => s + (i.descuento > 0 ? i.precio * i.cantidad * (i.descuento / 100) : 0), 0) * 100) / 100
+  const recargoTotal   = Math.round(carrito.reduce((s, i) => s + (i.descuento < 0 ? i.precio * i.cantidad * (-i.descuento / 100) : 0), 0) * 100) / 100
   const subtotal      = Math.round((subtotalBruto - descItems) * 100) / 100
   const total         = subtotal
   const cambio        = Math.max(0, Number(montoPago) - total)
@@ -291,7 +330,8 @@ useEffect(() => {
           usuario_id:        userId,
           folio,
           subtotal:          Math.round(subtotalBruto * 100) / 100,
-          descuento:         Math.round(descItems * 100) / 100,
+          descuento:         Math.round(descuentoTotal * 100) / 100,
+          recargo:           Math.round(recargoTotal * 100) / 100,
           iva:               0,
           total:             Math.round(total * 100) / 100,
           estado:            'completada',
@@ -324,12 +364,13 @@ useEffect(() => {
       })
       if (ePago) throw new Error(ePago.message)
 
-      setVentaExitosa({ folio, total, cambio, contacto, cliente, metodoPago, items: [...carrito], descItems })
+      setVentaExitosa({ folio, total, cambio, contacto, cliente, metodoPago, items: [...carrito], descItems, descuentoTotal, recargoTotal })
       setCarrito([]); localStorage.removeItem('pos_carrito')
       setDescuentoGlobal(0); setMontoPago('')
       setContacto(null); setBusqContacto(''); setCliente(null); setBusqCliente(''); setMetodoPago('efectivo')
       setCreandoContacto(false)
       setMostrarFlete(false)
+      setFilaCarrito(null)
       cantRefs.current = {}
     } catch (err) {
       setError(err.message)
@@ -469,7 +510,7 @@ useEffect(() => {
           <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid #e0e0e0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h3 style={{ margin: 0, fontSize: '15px', color: '#1a1a2e' }}>Carrito ({carrito.length} productos)</h3>
             {carrito.length > 0 && (
-              <button onClick={() => { setCarrito([]); localStorage.removeItem('pos_carrito'); cantRefs.current = {}; inputRef.current?.focus() }}
+              <button onClick={() => { setCarrito([]); localStorage.removeItem('pos_carrito'); cantRefs.current = {}; setFilaCarrito(null); inputRef.current?.focus() }}
                 style={{ fontSize: '12px', color: '#e53e3e', background: 'none', border: 'none', cursor: 'pointer' }}>
                 Limpiar todo
               </button>
@@ -488,7 +529,7 @@ useEffect(() => {
                     <th style={{ ...th, textAlign: 'center', width: '110px' }}>Cant.</th>
                     <th style={{ ...th, textAlign: 'right', width: '70px' }}>Exist.</th>
                     <th style={{ ...th, textAlign: 'right', width: '100px' }}>Precio</th>
-                    <th style={{ ...th, textAlign: 'center', width: '70px' }}>Desc%</th>
+                    <th style={{ ...th, textAlign: 'center', width: '95px' }}>Desc%</th>
                     <th style={{ ...th, textAlign: 'right', width: '110px' }}>Subtotal</th>
                     <th style={{ ...th, width: '40px' }}></th>
                   </tr>
@@ -496,16 +537,20 @@ useEffect(() => {
                 <tbody>
                   {carrito.map(item => {
                     const subtotalItem = Math.round(item.precio * item.cantidad * (1 - item.descuento / 100) * 100) / 100
+                    const marcada = filaCarrito === item.id
                     return (
-                      <tr key={item.id} style={{ borderTop: '1px solid #f0f0f0', ...(() => {
+                      <tr key={item.id}
+                        onClick={() => setFilaCarrito(marcada ? null : item.id)}
+                        style={{ borderTop: '1px solid #f0f0f0', cursor: 'pointer', ...(() => {
                         const costoUnit   = item.costo / (item.factor || 1)
                         const precioFinal = item.precio * (1 - item.descuento / 100)
                         const margen      = precioFinal > 0 ? (precioFinal - costoUnit) / precioFinal * 100 : 0
-                      return margen < 0
+                      const margenStyle = margen < 0
                       ? { background: '#ffe4e4', borderLeft: '4px solid #e53e3e' }
                       : margen < 10
                       ? { background: '#fef3c7', borderLeft: '4px solid #BA7517' }
                       : {}
+                      return marcada ? { ...margenStyle, boxShadow: 'inset 0 0 0 2px #534AB7' } : margenStyle
                       })() }}>
                         <td style={td}>
                           <p style={{ margin: 0, fontSize: '13px', fontWeight: '600' }}>{item.esServicio && '🚚 '}{item.nombre}</p>
@@ -555,14 +600,16 @@ useEffect(() => {
                         <td style={{ ...td, textAlign: 'right' }}>
                           <input
                             type="text"
-                            defaultValue={item.precio.toFixed(2)}
+                            defaultValue={(Math.round(item.precio * (1 - item.descuento / 100) * 100) / 100).toFixed(2)}
                             onBlur={e => {
                               const val = parseFloat(e.target.value.replace(/[$,]/g, ''))
-                              if (!isNaN(val) && val > 0) {
-                                const descuento = Math.round((1 - val / item.precio) * 10000) / 100
+                              const precioActual = Math.round(item.precio * (1 - item.descuento / 100) * 100) / 100
+                              if (!isNaN(val) && val > 0 && Math.abs(val - precioActual) > 0.005) {
+                                const descuento = Math.round((1 - val / item.precio) * 1000000) / 10000
                                 actualizarDescuento(item.id, descuento)
+                                e.target.value = val.toFixed(2)
                               } else {
-                                e.target.value = item.precio.toFixed(2)
+                                e.target.value = precioActual.toFixed(2)
                               }
                             }}
                             onKeyDown={e => {
@@ -576,10 +623,19 @@ useEffect(() => {
                           <input type="number" min="-1000" max="100" step="1" value={item.descuento}
                             title="Negativo = recargo (ej. flete o precio foráneo)"
                             onChange={e => actualizarDescuento(item.id, parseFloat(e.target.value) || 0)}
-                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); inputRef.current?.focus() } }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') { e.preventDefault(); inputRef.current?.focus() }
+                              else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); e.target.blur() }
+                            }}
                             onFocus={e => e.target.select()}
+                            onWheel={e => e.target.blur()}
                             style={{ width: '55px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px' }}
                           />
+                          {item.descuento !== 0 && (
+                            <p style={{ margin: '3px 0 0', fontSize: '11px', fontWeight: '600', color: item.descuento > 0 ? '#e53e3e' : '#0C447C', whiteSpace: 'nowrap' }}>
+                              → {fmt(Math.round(item.precio * (1 - item.descuento / 100) * 100) / 100)} c/u
+                            </p>
+                          )}
                         </td>
                         <td style={{ ...td, textAlign: 'right' }}>
                           <input
@@ -592,7 +648,7 @@ useEffect(() => {
                             defaultValue={subtotalItem.toFixed(2)}
                             onBlur={e => {
                               const val = parseFloat(e.target.value.replace(/[$,]/g, ''))
-                              if (!isNaN(val) && val > 0) {
+                              if (!isNaN(val) && val > 0 && Math.abs(val - subtotalItem) > 0.005) {
                                 const nuevaCantidad = val / item.precio
                                 actualizarCantidad(item.id, nuevaCantidad)
                                 if (cantRefs.current[item.id]) {
@@ -768,13 +824,22 @@ useEffect(() => {
                   setCarrito(prev => prev.map(i => ({ ...i, descuento: val })))
                 }}
                 onFocus={e => e.target.select()}
+                onWheel={e => e.target.blur()}
+                onKeyDown={e => { if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); e.target.blur() } }}
+                title="Aplica el mismo % a TODOS los productos del carrito — sobreescribe los descuentos/recargos individuales"
                 style={{ width: '60px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px' }}
               />
             </div>
-            {descItems !== 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: descItems > 0 ? '#e53e3e' : '#0C447C' }}>
-                <span>{descItems > 0 ? 'Descuento' : 'Recargo (foránea/flete)'}</span>
-                <span>{descItems > 0 ? '-' : '+'}{fmt(Math.abs(descItems))}</span>
+            {descuentoTotal > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#e53e3e' }}>
+                <span>Descuento</span>
+                <span>-{fmt(descuentoTotal)}</span>
+              </div>
+            )}
+            {recargoTotal > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#0C447C' }}>
+                <span>Recargo (foránea/flete)</span>
+                <span>+{fmt(recargoTotal)}</span>
               </div>
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '20px', fontWeight: '700', borderTop: '2px solid #e0e0e0', paddingTop: '8px', marginTop: '4px' }}>
@@ -788,7 +853,7 @@ useEffect(() => {
                 onBlur={e => {
                   setTotalEditable(false)
                   const val = parseFloat(e.target.value.replace(/[$,]/g, ''))
-                  if (!isNaN(val) && val > 0 && subtotalBruto > 0) {
+                  if (!isNaN(val) && val > 0 && Math.abs(val - total) > 0.005 && subtotalBruto > 0) {
                     const nuevoDesc = Math.max(0, Math.min(100, (1 - val / subtotalBruto) * 100))
                     const pct = Math.round(nuevoDesc * 10000) / 10000
                     setDescuentoGlobal(pct)
@@ -837,6 +902,7 @@ useEffect(() => {
               <input type="number" placeholder="Monto recibido" value={montoPago}
                 onChange={e => setMontoPago(e.target.value)}
                 onFocus={e => e.target.select()}
+                onWheel={e => e.target.blur()}
                 onKeyDown={e => { if (e.key === 'Enter') procesarVenta() }}
                 style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #ddd', fontSize: '16px', textAlign: 'right', boxSizing: 'border-box', marginBottom: '8px' }}
               />
@@ -921,16 +987,18 @@ function TicketVenta({ venta, onNueva }) {
           })}
         </div>
         <div style={{ borderTop: '1px dashed #ccc', marginTop: '8px', paddingTop: '8px' }}>
-          {venta.descItems !== 0 && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
-              <span>{venta.descItems > 0 ? 'Descuento' : 'Recargo'}</span>
-              <span>{venta.descItems > 0 ? '-' : '+'}{new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(Math.abs(venta.descItems))}</span>
-            </div>
-          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: '700', fontSize: '14px' }}>
             <span>TOTAL</span>
             <span>{new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(venta.total)}</span>
           </div>
+          {(venta.descuentoTotal > 0 || venta.recargoTotal > 0) && (
+            <p style={{ margin: '4px 0 0', fontSize: '10px', color: '#aaa', fontStyle: 'italic' }}>
+              (precios de arriba ya incluyen
+              {venta.descuentoTotal > 0 ? ` descuento de ${new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(venta.descuentoTotal)}` : ''}
+              {venta.descuentoTotal > 0 && venta.recargoTotal > 0 ? ' y' : ''}
+              {venta.recargoTotal > 0 ? ` recargo de ${new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(venta.recargoTotal)}` : ''})
+            </p>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#888', marginTop: '2px' }}>
             <span>Pago</span>
             <span>{METODOS_TICKET[venta.metodoPago] || venta.metodoPago}</span>

@@ -35,6 +35,7 @@ export default function Reportes() {
   const [porDiaSicar, setPorDiaSicar]           = useState(null)
   const [resumenSicar, setResumenSicar]         = useState(null)
   const [pagosSicar, setPagosSicar]             = useState(null)
+  const [pagosLive, setPagosLive]               = useState(null)
   const [canceladasSicar, setCanceladasSicar]   = useState(null)
   const [totalHistorico, setTotalHistorico]     = useState(null)
   const [canceladasTotal, setCanceladasTotal]   = useState(0)
@@ -51,6 +52,7 @@ export default function Reportes() {
         .select('id, total, estado, created_at')
         .gte('created_at', new Date(`${d}T00:00:00`).toISOString())
         .lte('created_at', new Date(`${h}T23:59:59`).toISOString())
+        .is('sicar_id', null)
         .order('created_at', { ascending: false })
         .range(idx, idx + 999)
       if (error || !data || data.length === 0) break
@@ -98,12 +100,28 @@ export default function Reportes() {
   }
 
   async function cargarResumenSicar(d = desde, h = hasta) {
-    const { data, error } = await supabase.rpc('reporte_estado_resultados', {
-      fecha_desde: new Date(`${d}T00:00:00`).toISOString(), fecha_hasta: new Date(`${h}T23:59:59`).toISOString()
-    })
+    const [{ data, error }, { data: ventasLive }, { data: itemsLive }] = await Promise.all([
+      supabase.rpc('reporte_estado_resultados', {
+        fecha_desde: new Date(`${d}T00:00:00`).toISOString(), fecha_hasta: new Date(`${h}T23:59:59`).toISOString()
+      }),
+      supabase.from('ventas').select('total')
+        .gte('created_at', new Date(`${d}T00:00:00`).toISOString())
+        .lte('created_at', new Date(`${h}T23:59:59`).toISOString())
+        .eq('estado', 'completada')
+        .is('sicar_id', null),
+      supabase.from('venta_items').select('costo_unitario, cantidad, ventas!inner(created_at, estado, sicar_id)')
+        .gte('ventas.created_at', new Date(`${d}T00:00:00`).toISOString())
+        .lte('ventas.created_at', new Date(`${h}T23:59:59`).toISOString())
+        .eq('ventas.estado', 'completada')
+        .is('ventas.sicar_id', null),
+    ])
     if (error || !data) { setResumenSicar(null); return }
-    const ventas_total = data.reduce((s, m) => s + Number(m.ventas || 0), 0)
-    const costo_total  = data.reduce((s, m) => s + Number(m.costo || 0), 0)
+    const ventas_sicar = data.reduce((s, m) => s + Number(m.ventas || 0), 0)
+    const costo_sicar  = data.reduce((s, m) => s + Number(m.costo || 0), 0)
+    const ventas_live  = (ventasLive || []).reduce((s, v) => s + Number(v.total || 0), 0)
+    const costo_live   = (itemsLive || []).reduce((s, it) => s + Number(it.costo_unitario || 0) * Number(it.cantidad || 0), 0)
+    const ventas_total = ventas_sicar + ventas_live
+    const costo_total  = costo_sicar + costo_live
     const utilidad     = ventas_total - costo_total
     const margen       = ventas_total > 0 ? (utilidad / ventas_total * 100) : 0
     setResumenSicar({ ventas: ventas_total, costo: costo_total, utilidad, margen })
@@ -127,6 +145,24 @@ export default function Reportes() {
     setPagosSicar(totales)
   }
 
+  async function cargarPagosLive(d = desde, h = hasta) {
+    const { data, error } = await supabase
+      .from('pagos')
+      .select('metodo, monto, ventas!inner(created_at, estado, sicar_id)')
+      .gte('ventas.created_at', new Date(`${d}T00:00:00`).toISOString())
+      .lte('ventas.created_at', new Date(`${h}T23:59:59`).toISOString())
+      .eq('ventas.estado', 'completada')
+      .is('ventas.sicar_id', null)
+    if (error || !data) { setPagosLive(null); return }
+    const totales = data.reduce((s, r) => {
+      const metodo = ['efectivo', 'tarjeta', 'transferencia', 'credito', 'cheque'].includes(r.metodo) ? r.metodo : 'otros'
+      s[metodo] += Number(r.monto || 0)
+      s.total   += Number(r.monto || 0)
+      return s
+    }, { efectivo: 0, tarjeta: 0, transferencia: 0, credito: 0, cheque: 0, otros: 0, total: 0 })
+    setPagosLive(totales)
+  }
+
   async function cargarCanceladasSicar(d = desde, h = hasta) {
     const { data, error } = await supabase
       .from('sicar_canceladas_dia')
@@ -141,20 +177,38 @@ export default function Reportes() {
   }
 
   async function cargarTotalHistorico() {
-    const [{ data: util }, { data: canc }] = await Promise.all([
+    async function traerTodo(tabla, campos, filtro) {
+      let out = [], idx = 0
+      while (true) {
+        let q = supabase.from(tabla).select(campos).range(idx, idx + 999)
+        if (filtro) q = filtro(q)
+        const { data, error } = await q
+        if (error || !data || data.length === 0) break
+        out = [...out, ...data]
+        if (data.length < 1000) break
+        idx += 1000
+      }
+      return out
+    }
+
+    const [{ data: util }, { data: canc }, ventasLive, itemsLive, canceladasLive] = await Promise.all([
       supabase.from('sicar_utilidades').select('ventas, compras, utilidad'),
-      supabase.from('sicar_canceladas_dia').select('canceladas')
+      supabase.from('sicar_canceladas_dia').select('canceladas'),
+      traerTodo('ventas', 'total', q => q.eq('estado', 'completada').is('sicar_id', null)),
+      traerTodo('venta_items', 'costo_unitario, cantidad, ventas!inner(estado, sicar_id)', q => q.eq('ventas.estado', 'completada').is('ventas.sicar_id', null)),
+      traerTodo('ventas', 'id', q => q.eq('estado', 'cancelada').is('sicar_id', null)),
     ])
-    if (util) {
-      const ventas   = util.reduce((s, d) => s + Number(d.ventas || 0), 0)
-      const compras  = util.reduce((s, d) => s + Number(d.compras || 0), 0)
-      const utilidad = util.reduce((s, d) => s + Number(d.utilidad || 0), 0)
-      const margen   = ventas > 0 ? (utilidad / ventas * 100) : 0
-      setTotalHistorico({ ventas, compras, utilidad, margen })
-    }
-    if (canc) {
-      setCanceladasTotal(canc.reduce((s, d) => s + Number(d.canceladas || 0), 0))
-    }
+
+    let ventas   = (util || []).reduce((s, d) => s + Number(d.ventas || 0), 0)
+    let compras  = (util || []).reduce((s, d) => s + Number(d.compras || 0), 0)
+    ventas  += ventasLive.reduce((s, v) => s + Number(v.total || 0), 0)
+    compras += itemsLive.reduce((s, it) => s + Number(it.costo_unitario || 0) * Number(it.cantidad || 0), 0)
+    const utilidad = ventas - compras
+    const margen   = ventas > 0 ? (utilidad / ventas * 100) : 0
+    setTotalHistorico({ ventas, compras, utilidad, margen })
+
+    const canceladasSicarTotal = (canc || []).reduce((s, d) => s + Number(d.canceladas || 0), 0)
+    setCanceladasTotal(canceladasSicarTotal + canceladasLive.length)
   }
 
   useEffect(() => {
@@ -162,6 +216,7 @@ export default function Reportes() {
     cargarPorDiaSicar()
     cargarResumenSicar()
     cargarPagosSicar()
+    cargarPagosLive()
     cargarCanceladasSicar()
     cargarTotalHistorico()
   }, [])
@@ -170,17 +225,17 @@ export default function Reportes() {
     const h = hoy()
     setDesde(h); setHasta(h)
     cargarReporte(h, h); cargarPorDiaSicar(h, h)
-    cargarResumenSicar(h, h); cargarPagosSicar(h, h); cargarCanceladasSicar(h, h)
+    cargarResumenSicar(h, h); cargarPagosSicar(h, h); cargarPagosLive(h, h); cargarCanceladasSicar(h, h)
   }
 
   const setMes = () => {
     const d = primerDiaMes(), h = hoy(); setDesde(d); setHasta(h)
     cargarReporte(d, h); cargarPorDiaSicar(d, h)
-    cargarResumenSicar(d, h); cargarPagosSicar(d, h); cargarCanceladasSicar(d, h)
+    cargarResumenSicar(d, h); cargarPagosSicar(d, h); cargarPagosLive(d, h); cargarCanceladasSicar(d, h)
   }
 
   const consultar = () => {
-    cargarReporte(); cargarPorDiaSicar(); cargarResumenSicar(); cargarPagosSicar(); cargarCanceladasSicar()
+    cargarReporte(); cargarPorDiaSicar(); cargarResumenSicar(); cargarPagosSicar(); cargarPagosLive(); cargarCanceladasSicar()
   }
 
   const porDiaCombinado = (() => {
@@ -209,6 +264,16 @@ export default function Reportes() {
 
   const canceladasDia = (canceladasSicar?.canceladas || 0) + (datos?.total_canceladas || 0)
 
+  const pagosCombinado = (pagosSicar || pagosLive) ? {
+    efectivo:      (pagosSicar?.efectivo      || 0) + (pagosLive?.efectivo      || 0),
+    tarjeta:       (pagosSicar?.tarjeta       || 0) + (pagosLive?.tarjeta       || 0),
+    transferencia: (pagosSicar?.transferencia || 0) + (pagosLive?.transferencia || 0),
+    credito:       (pagosSicar?.credito       || 0) + (pagosLive?.credito      || 0),
+    cheque:        (pagosSicar?.cheque        || 0) + (pagosLive?.cheque       || 0),
+    otros:         (pagosSicar?.otros         || 0) + (pagosLive?.otros        || 0),
+    total:         (pagosSicar?.total         || 0) + (pagosLive?.total        || 0),
+  } : null
+
   const tarjetas = vista === 'anual' && totalHistorico
     ? [
         { label: 'Ventas históricas',     valor: fmt(totalHistorico.ventas),   color: '#1D9E75' },
@@ -218,8 +283,8 @@ export default function Reportes() {
       ]
     : vista === 'resultados' && resumenSicar
     ? [
-        { label: 'Ventas (SICAR)',  valor: fmt(resumenSicar.ventas),   color: '#1D9E75' },
-        { label: 'Costo (SICAR)',   valor: fmt(resumenSicar.costo),    color: '#e53e3e' },
+        { label: 'Ventas',  valor: fmt(resumenSicar.ventas),   color: '#1D9E75' },
+        { label: 'Costo',   valor: fmt(resumenSicar.costo),    color: '#e53e3e' },
         { label: 'Utilidad',        valor: fmt(resumenSicar.utilidad), color: '#f97316' },
         { label: 'Margen',          valor: `${resumenSicar.margen.toFixed(1)}%`, color: '#534AB7' },
       ]
@@ -230,12 +295,12 @@ export default function Reportes() {
         { label: 'Ticket promedio', valor: fmt(totalesDia.ventas / (totalesDia.tickets || 1)), color: '#534AB7' },
         { label: 'Canceladas',      valor: canceladasDia, color: '#e53e3e' },
       ]
-    : vista === 'pagos' && pagosSicar
+    : vista === 'pagos' && pagosCombinado
     ? [
-        { label: 'Efectivo',      valor: fmt(pagosSicar.efectivo),      color: '#1D9E75' },
-        { label: 'Tarjeta',       valor: fmt(pagosSicar.tarjeta),       color: '#534AB7' },
-        { label: 'Transferencia', valor: fmt(pagosSicar.transferencia), color: '#0C447C' },
-        { label: 'Total cobrado', valor: fmt(pagosSicar.total),         color: '#f97316' },
+        { label: 'Efectivo',      valor: fmt(pagosCombinado.efectivo),      color: '#1D9E75' },
+        { label: 'Tarjeta',       valor: fmt(pagosCombinado.tarjeta),       color: '#534AB7' },
+        { label: 'Transferencia', valor: fmt(pagosCombinado.transferencia), color: '#0C447C' },
+        { label: 'Total cobrado', valor: fmt(pagosCombinado.total),         color: '#f97316' },
       ]
     : datos
     ? [
@@ -275,7 +340,7 @@ export default function Reportes() {
           <button key={tab.id} onClick={() => {
             setVista(tab.id)
             if (tab.id !== 'anual' && tab.id !== 'cargar' && !datos) {
-              cargarReporte(); cargarPorDiaSicar(); cargarResumenSicar(); cargarPagosSicar(); cargarCanceladasSicar()
+              cargarReporte(); cargarPorDiaSicar(); cargarResumenSicar(); cargarPagosSicar(); cargarPagosLive(); cargarCanceladasSicar()
             }
           }} style={{
             padding: '8px 16px', borderRadius: '8px', fontSize: '13px',
@@ -309,11 +374,8 @@ export default function Reportes() {
               ))}
             </div>
           )}
-          {!cargando && vista === 'dia' && (
+          {!cargando && (vista === 'dia' || vista === 'pagos' || vista === 'resultados') && (
             <p style={{ margin: '-0.75rem 0 1.25rem', fontSize: '12px', color: '#aaa' }}>* Incluye historial cargado de SICAR + ventas registradas en el POS</p>
-          )}
-          {!cargando && (vista === 'resultados' || vista === 'pagos') && (
-            <p style={{ margin: '-0.75rem 0 1.25rem', fontSize: '12px', color: '#aaa' }}>* Datos tomados del reporte de SICAR</p>
           )}
         </>
       )}
@@ -360,8 +422,8 @@ export default function Reportes() {
           <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid #e0e0e0' }}>
             <h3 style={{ margin: 0, fontSize: '15px', color: '#1a1a2e' }}>Desglose por método de pago</h3>
           </div>
-          {!pagosSicar ? (
-            <p style={{ padding: '2rem', color: '#888', textAlign: 'center' }}>Sin datos. Carga el reporte general de ventas de SICAR primero.</p>
+          {!pagosCombinado ? (
+            <p style={{ padding: '2rem', color: '#888', textAlign: 'center' }}>Sin datos en el período seleccionado.</p>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
@@ -373,12 +435,12 @@ export default function Reportes() {
               </thead>
               <tbody>
                 {Object.entries({
-                  efectivo:      { label: 'Efectivo',      color: '#1D9E75', monto: pagosSicar.efectivo },
-                  tarjeta:       { label: 'Tarjeta',       color: '#534AB7', monto: pagosSicar.tarjeta },
-                  transferencia: { label: 'Transferencia', color: '#0C447C', monto: pagosSicar.transferencia },
-                  credito:       { label: 'Crédito',       color: '#BA7517', monto: pagosSicar.credito },
-                  cheque:        { label: 'Cheque',        color: '#888',    monto: pagosSicar.cheque },
-                  otros:         { label: 'Otros',         color: '#aaa',    monto: pagosSicar.otros },
+                  efectivo:      { label: 'Efectivo',      color: '#1D9E75', monto: pagosCombinado.efectivo },
+                  tarjeta:       { label: 'Tarjeta',       color: '#534AB7', monto: pagosCombinado.tarjeta },
+                  transferencia: { label: 'Transferencia', color: '#0C447C', monto: pagosCombinado.transferencia },
+                  credito:       { label: 'Crédito',       color: '#BA7517', monto: pagosCombinado.credito },
+                  cheque:        { label: 'Cheque',        color: '#888',    monto: pagosCombinado.cheque },
+                  otros:         { label: 'Otros',         color: '#aaa',    monto: pagosCombinado.otros },
                 }).filter(([, v]) => v.monto > 0).sort((a, b) => b[1].monto - a[1].monto)
                 .map(([key, v]) => (
                   <tr key={key} style={{ borderTop: '1px solid #f0f0f0' }}>
@@ -388,7 +450,7 @@ export default function Reportes() {
                     </td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: '600', color: v.color }}>{fmt(v.monto)}</td>
                     <td style={{ ...td, textAlign: 'right', color: '#888' }}>
-                      {pagosSicar.total > 0 ? ((v.monto / pagosSicar.total) * 100).toFixed(1) : 0}%
+                      {pagosCombinado.total > 0 ? ((v.monto / pagosCombinado.total) * 100).toFixed(1) : 0}%
                     </td>
                   </tr>
                 ))}
@@ -396,7 +458,7 @@ export default function Reportes() {
               <tfoot>
                 <tr style={{ background: '#f9f9f9', borderTop: '2px solid #e0e0e0' }}>
                   <td style={{ ...td, fontWeight: '700' }}>Total</td>
-                  <td style={{ ...td, textAlign: 'right', fontWeight: '700', color: '#f97316' }}>{fmt(pagosSicar.total)}</td>
+                  <td style={{ ...td, textAlign: 'right', fontWeight: '700', color: '#f97316' }}>{fmt(pagosCombinado.total)}</td>
                   <td style={{ ...td, textAlign: 'right' }}>100%</td>
                 </tr>
               </tfoot>
@@ -419,15 +481,51 @@ function EstadoResultados({ desde, hasta }) {
   useEffect(() => {
     async function cargar() {
       setCargando(true)
-      const { data, error } = await supabase.rpc('reporte_estado_resultados', {
-        fecha_desde: new Date(`${desde}T00:00:00`).toISOString(), fecha_hasta: new Date(`${hasta}T23:59:59`).toISOString()
-      })
+      const [{ data, error }, { data: ventasLive }, { data: itemsLive }] = await Promise.all([
+        supabase.rpc('reporte_estado_resultados', {
+          fecha_desde: new Date(`${desde}T00:00:00`).toISOString(), fecha_hasta: new Date(`${hasta}T23:59:59`).toISOString()
+        }),
+        supabase.from('ventas').select('total, created_at')
+          .gte('created_at', new Date(`${desde}T00:00:00`).toISOString())
+          .lte('created_at', new Date(`${hasta}T23:59:59`).toISOString())
+          .eq('estado', 'completada')
+          .is('sicar_id', null),
+        supabase.from('venta_items').select('costo_unitario, cantidad, ventas!inner(created_at, estado, sicar_id)')
+          .gte('ventas.created_at', new Date(`${desde}T00:00:00`).toISOString())
+          .lte('ventas.created_at', new Date(`${hasta}T23:59:59`).toISOString())
+          .eq('ventas.estado', 'completada')
+          .is('ventas.sicar_id', null),
+      ])
       if (error) { setCargando(false); return }
-      const meses = (data || []).map(d => ({
-        mes: d.mes, ventas: Number(d.ventas || 0), costo: Number(d.costo || 0),
-        utilidad: Number(d.ventas || 0) - Number(d.costo || 0),
-        margen: Number(d.ventas) > 0 ? ((Number(d.ventas) - Number(d.costo)) / Number(d.ventas) * 100) : 0
-      }))
+
+      const pad = n => String(n).padStart(2, '0')
+      const mesLocal = iso => { const dt = new Date(iso); return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}` }
+
+      const mapa = {}
+      ;(data || []).forEach(d => {
+        if (!mapa[d.mes]) mapa[d.mes] = { ventas: 0, costo: 0 }
+        mapa[d.mes].ventas += Number(d.ventas || 0)
+        mapa[d.mes].costo  += Number(d.costo || 0)
+      })
+      ;(ventasLive || []).forEach(v => {
+        const mes = mesLocal(v.created_at)
+        if (!mapa[mes]) mapa[mes] = { ventas: 0, costo: 0 }
+        mapa[mes].ventas += Number(v.total)
+      })
+      ;(itemsLive || []).forEach(it => {
+        const mes = mesLocal(it.ventas.created_at)
+        if (!mapa[mes]) mapa[mes] = { ventas: 0, costo: 0 }
+        mapa[mes].costo += Number(it.costo_unitario || 0) * Number(it.cantidad || 0)
+      })
+
+      const meses = Object.entries(mapa)
+        .map(([mes, d]) => ({
+          mes, ventas: d.ventas, costo: d.costo,
+          utilidad: d.ventas - d.costo,
+          margen: d.ventas > 0 ? ((d.ventas - d.costo) / d.ventas * 100) : 0
+        }))
+        .sort((a, b) => a.mes.localeCompare(b.mes))
+
       setDatos(meses)
       setCargando(false)
     }
@@ -489,32 +587,68 @@ function ComparativoAnual() {
   useEffect(() => {
     async function cargar() {
       setCargando(true)
-      const [{ data: utilidades, error: e1 }, { data: canceladas }] = await Promise.all([
+
+      async function traerTodo(tabla, campos, filtro) {
+        let out = [], idx = 0
+        while (true) {
+          let q = supabase.from(tabla).select(campos).range(idx, idx + 999)
+          if (filtro) q = filtro(q)
+          const { data, error } = await q
+          if (error || !data || data.length === 0) break
+          out = [...out, ...data]
+          if (data.length < 1000) break
+          idx += 1000
+        }
+        return out
+      }
+
+      const [{ data: utilidades, error: e1 }, { data: canceladas }, ventasLive, itemsLive, canceladasLive] = await Promise.all([
         supabase.from('sicar_utilidades').select('mes, ventas, compras, utilidad').order('mes', { ascending: true }),
-        supabase.from('sicar_canceladas_dia').select('fecha, canceladas, monto')
+        supabase.from('sicar_canceladas_dia').select('fecha, canceladas, monto'),
+        traerTodo('ventas', 'total, created_at', q => q.eq('estado', 'completada').is('sicar_id', null)),
+        traerTodo('venta_items', 'costo_unitario, cantidad, ventas!inner(created_at, estado, sicar_id)', q => q.eq('ventas.estado', 'completada').is('ventas.sicar_id', null)),
+        traerTodo('ventas', 'created_at', q => q.eq('estado', 'cancelada').is('sicar_id', null)),
       ])
       if (e1 || !utilidades) { setCargando(false); return }
 
+      const añoLocal = iso => new Date(iso).getFullYear().toString()
       const porAño = {}
+      const asegurar = año => { if (!porAño[año]) porAño[año] = { ventas: 0, compras: 0, canceladas: 0 } }
+
       utilidades.forEach(d => {
         const año = d.mes.split('-')[0]
-        if (!porAño[año]) porAño[año] = { ventas: 0, compras: 0, utilidad: 0, canceladas: 0 }
-        porAño[año].ventas   += Number(d.ventas || 0)
-        porAño[año].compras  += Number(d.compras || 0)
-        porAño[año].utilidad += Number(d.utilidad || 0)
-      });
-      (canceladas || []).forEach(d => {
+        asegurar(año)
+        porAño[año].ventas  += Number(d.ventas || 0)
+        porAño[año].compras += Number(d.compras || 0)
+      })
+      ;(canceladas || []).forEach(d => {
         const año = d.fecha?.slice(0, 4)
-        if (año && porAño[año]) porAño[año].canceladas += Number(d.canceladas || 0)
+        if (año) { asegurar(año); porAño[año].canceladas += Number(d.canceladas || 0) }
+      })
+      ventasLive.forEach(v => {
+        const año = añoLocal(v.created_at)
+        asegurar(año)
+        porAño[año].ventas += Number(v.total)
+      })
+      itemsLive.forEach(it => {
+        const año = añoLocal(it.ventas.created_at)
+        asegurar(año)
+        porAño[año].compras += Number(it.costo_unitario || 0) * Number(it.cantidad || 0)
+      })
+      canceladasLive.forEach(v => {
+        const año = añoLocal(v.created_at)
+        asegurar(año)
+        porAño[año].canceladas += 1
       })
 
       const años = Object.entries(porAño)
         .sort((a, b) => a[0].localeCompare(b[0]))
         .map(([año, d], i, arr) => {
+          const utilidad    = d.ventas - d.compras
           const anterior    = i > 0 ? arr[i - 1][1].ventas : null
           const crecimiento = anterior && anterior > 0 ? ((d.ventas - anterior) / anterior * 100) : null
-          return { año, ventas: d.ventas, compras: d.compras, utilidad: d.utilidad,
-            margen: d.ventas > 0 ? (d.utilidad / d.ventas * 100) : 0,
+          return { año, ventas: d.ventas, compras: d.compras, utilidad,
+            margen: d.ventas > 0 ? (utilidad / d.ventas * 100) : 0,
             canceladas: d.canceladas, crecimiento }
         })
 
@@ -745,14 +879,20 @@ function CargadorSicar() {
         const { error: e3 } = await supabase.rpc('upsert_sicar_pagos_dia', { datos: pagosArr })
         if (e3) throw new Error(`Error pagos: ${e3.message}`)
 
-        // Verificar cuáles ya existen
+        // Verificar cuáles ya existen (en lotes, para no exceder el límite de la consulta)
         setProgreso('Verificando tickets existentes...')
         const sicarIds = ticketsNuevos.map(t => t.sicar_id)
-        const { data: existentes } = await supabase
-          .from('ventas')
-          .select('sicar_id')
-          .in('sicar_id', sicarIds)
-        const idsExistentes = new Set((existentes || []).map(v => v.sicar_id))
+        const idsExistentes = new Set()
+        for (let i = 0; i < sicarIds.length; i += 500) {
+          const lote = sicarIds.slice(i, i + 500)
+          const { data: existentes, error: eExist } = await supabase
+            .from('ventas')
+            .select('sicar_id')
+            .in('sicar_id', lote)
+          if (eExist) throw new Error(`Error verificando existentes: ${eExist.message}`)
+          ;(existentes || []).forEach(v => idsExistentes.add(v.sicar_id))
+          setProgreso(`Verificando tickets existentes... ${Math.min(i + 500, sicarIds.length)}/${sicarIds.length}`)
+        }
         const porInsertar = ticketsNuevos.filter(t => !idsExistentes.has(t.sicar_id))
 
         if (porInsertar.length > 0) {
@@ -774,15 +914,19 @@ function CargadorSicar() {
           for (let i = 0; i < ventasRows.length; i += 100) {
             const lote = ventasRows.slice(i, i + 100)
             const { data: ventasInsertadas, error: eV } = await supabase
-              .from('ventas').insert(lote).select('id, sicar_id')
+              .from('ventas')
+              .upsert(lote, { onConflict: 'negocio_id,folio', ignoreDuplicates: true })
+              .select('id, sicar_id')
             if (eV) throw new Error(`Error insertando ventas: ${eV.message}`)
 
-            const pagosVentas = ventasInsertadas.map(v => {
+            const pagosVentas = (ventasInsertadas || []).map(v => {
               const t = porInsertar.find(x => x.sicar_id === v.sicar_id)
               return { venta_id: v.id, metodo: t.metodo, monto: Math.round(t.total * 100) / 100 }
             })
-            const { error: eP } = await supabase.from('pagos').insert(pagosVentas)
-            if (eP) throw new Error(`Error insertando pagos: ${eP.message}`)
+            if (pagosVentas.length > 0) {
+              const { error: eP } = await supabase.from('pagos').insert(pagosVentas)
+              if (eP) throw new Error(`Error insertando pagos: ${eP.message}`)
+            }
             setProgreso(`Insertando tickets... ${Math.min(i + 100, ventasRows.length)}/${ventasRows.length}`)
           }
         }
