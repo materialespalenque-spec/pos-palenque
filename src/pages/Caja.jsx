@@ -1,10 +1,10 @@
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { imprimirTicket } from '../lib/ticket'
+import { getSucursalId } from '../lib/config'
 import { buscarCotizaciones, cargarCotizacion, cotizacionACarrito, marcarConvertida, estadoVisible } from '../lib/cotizaciones'
 
 const NEGOCIO_ID  = 'b69b5ee8-b22a-426c-8426-cdf758a12b95'
-const SUCURSAL_ID = '8e56bb7a-9041-4741-a468-4ba68a97f163'
 
 const fmt = n => new Intl.NumberFormat('es-MX', {
   style: 'currency', currency: 'MXN'
@@ -222,7 +222,7 @@ useEffect(() => {
   const agregarProducto = (p) => {
     // Precio neto = precio_venta * 1.16, redondeado
     const precio = Math.round(p.precio_venta * 1.16 * 100) / 100
-    const existencia = p.inventario?.find(i => i.sucursal_id === SUCURSAL_ID)?.existencia ?? 0
+    const existencia = p.inventario?.find(i => i.sucursal_id === getSucursalId())?.existencia ?? 0
     setCarrito(prev => {
       const existe = prev.find(i => i.id === p.id)
       if (existe) {
@@ -332,7 +332,7 @@ useEffect(() => {
       setProdNuevoError(error?.message || 'No se pudo crear el producto')
       return
     }
-    agregarProducto({ ...p, inventario: [{ sucursal_id: SUCURSAL_ID, existencia }] })
+    agregarProducto({ ...p, inventario: [{ sucursal_id: getSucursalId(), existencia }] })
     setMostrarProdNuevo(false)
   }
 
@@ -482,7 +482,7 @@ useEffect(() => {
         .from('ventas')
         .insert({
           negocio_id:        NEGOCIO_ID,
-          sucursal_id:       SUCURSAL_ID,
+          sucursal_id:       getSucursalId(),
           usuario_id:        userId,
           folio,
           subtotal:          Math.round(subtotalBruto * 100) / 100,

@@ -1,8 +1,17 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 
+// Los usuarios sin correo real entran con su "usuario" (ej. miguel);
+// internamente se convierte en usuario@palenque.pos
+const DOMINIO_INTERNO = 'palenque.pos'
+
+function aCorreo(texto) {
+  const t = texto.trim().toLowerCase()
+  return t.includes('@') ? t : `${t}@${DOMINIO_INTERNO}`
+}
+
 function Login() {
-  const [email, setEmail] = useState('')
+  const [usuario, setUsuario] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [cargando, setCargando] = useState(false)
@@ -12,13 +21,23 @@ function Login() {
     setCargando(true)
     setError('')
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    const { error } = await supabase.auth.signInWithPassword({ email: aCorreo(usuario), password })
 
     if (error) {
-      setError('Email o contraseña incorrectos')
+      setError('Usuario o contraseña incorrectos')
       setCargando(false)
     }
   }
+
+  const estiloInput = {
+    width: '100%',
+    padding: '10px 12px',
+    borderRadius: '8px',
+    border: '1px solid #ddd',
+    fontSize: '14px',
+    boxSizing: 'border-box'
+  }
+  const estiloLabel = { fontSize: '13px', color: '#555', display: 'block', marginBottom: '6px' }
 
   return (
     <div style={{
@@ -44,42 +63,27 @@ function Login() {
 
         <form onSubmit={handleLogin}>
           <div style={{ marginBottom: '1rem' }}>
-            <label style={{ fontSize: '13px', color: '#555', display: 'block', marginBottom: '6px' }}>
-              Email
-            </label>
+            <label style={estiloLabel}>Usuario o correo</label>
             <input
-              type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
+              type="text"
+              value={usuario}
+              onChange={e => setUsuario(e.target.value)}
               required
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                borderRadius: '8px',
-                border: '1px solid #ddd',
-                fontSize: '14px',
-                boxSizing: 'border-box'
-              }}
+              autoFocus
+              autoCapitalize="none"
+              autoCorrect="off"
+              style={estiloInput}
             />
           </div>
 
           <div style={{ marginBottom: '1.5rem' }}>
-            <label style={{ fontSize: '13px', color: '#555', display: 'block', marginBottom: '6px' }}>
-              Contraseña
-            </label>
+            <label style={estiloLabel}>Contraseña</label>
             <input
               type="password"
               value={password}
               onChange={e => setPassword(e.target.value)}
               required
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                borderRadius: '8px',
-                border: '1px solid #ddd',
-                fontSize: '14px',
-                boxSizing: 'border-box'
-              }}
+              style={estiloInput}
             />
           </div>
 

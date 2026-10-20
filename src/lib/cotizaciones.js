@@ -1,6 +1,6 @@
 // Lógica compartida de Cotizaciones — usada por la pantalla de Cotizaciones y por Caja.
 import { supabase } from './supabase'
-import { SUCURSAL_ID, cargarEncabezado } from './config'
+import { getSucursalId, cargarEncabezado } from './config'
 
 export const IVA = 1.16
 export const r2 = n => Math.round((Number(n) || 0) * 100) / 100
@@ -39,7 +39,7 @@ export async function guardarCotizacion(d) {
   const nombre = (d.nombreCliente || '').trim() || d.cliente?.nombre || d.contacto?.nombre || ''
   const cot = {
     id: d.id || null,
-    sucursal_id: SUCURSAL_ID,
+    sucursal_id: getSucursalId(),
     cliente_id: d.cliente?.id || null,
     contacto_id: d.contacto?.id || null,
     nombre_cliente: nombre,
@@ -121,7 +121,7 @@ export async function cotizacionACarrito(cot, items) {
       factor: p ? (p.factor || 1) : 1,
       peso: Number(it.peso_unitario) || parseFloat(p?.peso_kg) || 0,
       unidad: it.unidad || p?.unidad || null,
-      existencia: p?.inventario?.find(x => x.sucursal_id === SUCURSAL_ID)?.existencia ?? 0,
+      existencia: p?.inventario?.find(x => x.sucursal_id === getSucursalId())?.existencia ?? 0,
       alt: p ? preciosAlternos(p) : [],
       cantidad: Number(it.cantidad), descuento: Number(it.descuento_pct) || 0,
     }
@@ -190,7 +190,7 @@ export function estadoVisible(c) {
 /** Arma todos los datos que necesitan los formatos impresos (carta y ticket). */
 export async function prepararImpresion(cot, items) {
   const [enc, vend] = await Promise.all([
-    cargarEncabezado(cot.sucursal_id || SUCURSAL_ID),
+    cargarEncabezado(cot.sucursal_id || getSucursalId()),
     cot.usuario_id
       ? supabase.from('usuarios').select('nombre').eq('id', cot.usuario_id).maybeSingle()
       : Promise.resolve({ data: null }),

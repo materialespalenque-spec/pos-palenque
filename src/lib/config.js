@@ -1,10 +1,22 @@
 import { supabase } from './supabase'
 
 export const NEGOCIO_ID = 'b69b5ee8-b22a-426c-8426-cdf758a12b95'
-export const SUCURSAL_ID = '8e56bb7a-9041-4741-a468-4ba68a97f163'
+// Matriz Periférico (respaldo y carga de históricos)
+export const SUCURSAL_MATRIZ = '8e56bb7a-9041-4741-a468-4ba68a97f163'
+
+// Sucursal con la que se está trabajando (la fija App.jsx al iniciar sesión)
+let sucursalActiva = SUCURSAL_MATRIZ
+export const getSucursalId = () => sucursalActiva
+export const setSucursalActiva = id => {
+  sucursalActiva = id
+  try { localStorage.setItem('pos_sucursal_activa', id) } catch { /* ignorar */ }
+}
+export const sucursalGuardada = () => {
+  try { return localStorage.getItem('pos_sucursal_activa') } catch { return null }
+}
 
 // Logo de respaldo: archivo en /public/logo.jpg (se usa si no hay logo cargado en Configuración)
-export const LOGO_RESPALDO = '/logo.jpg'
+export const LOGO_RESPALDO = `${import.meta.env.BASE_URL}logo.jpg`
 
 // Devuelve { clave: valor } con la configuración del negocio
 export async function cargarConfig() {
@@ -15,7 +27,7 @@ export async function cargarConfig() {
 }
 
 // Datos listos para encabezados de documentos impresos (ticket, cotización carta)
-export async function cargarEncabezado(sucursalId = SUCURSAL_ID) {
+export async function cargarEncabezado(sucursalId = getSucursalId()) {
   const [cfg, { data: suc }, { data: neg }] = await Promise.all([
     cargarConfig(),
     supabase.from('sucursales').select('*').eq('id', sucursalId).single(),

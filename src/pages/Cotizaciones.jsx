@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import { NEGOCIO_ID, SUCURSAL_ID, cargarConfig } from '../lib/config'
+import { NEGOCIO_ID, getSucursalId, cargarConfig } from '../lib/config'
 import {
   r2, hoyISO, calcularTotales, preciosAlternos, guardarCotizacion, cargarCotizacion, cotizacionACarrito,
   enviarACaja, cancelarCotizacion, buscarCotizaciones, estadoVisible, prepararImpresion,
@@ -203,7 +203,7 @@ export default function Cotizaciones({ irA }) {
   // ---------- Carrito ----------
   const agregarProducto = p => {
     const precio = r2(p.precio_venta * IVA)
-    const existencia = p.inventario?.find(i => i.sucursal_id === SUCURSAL_ID)?.existencia ?? 0
+    const existencia = p.inventario?.find(i => i.sucursal_id === getSucursalId())?.existencia ?? 0
     setCarrito(prev => {
       const existe = prev.find(i => i.id === p.id)
       if (existe) return prev.map(i => i.id === p.id ? { ...i, cantidad: i.cantidad + 1 } : i)
@@ -269,7 +269,7 @@ export default function Cotizaciones({ irA }) {
     setGuardandoProd(false)
     const p = Array.isArray(data) ? data[0] : data
     if (error || !p) { setProdNuevoError(error?.message || 'No se pudo crear el producto'); return }
-    agregarProducto({ ...p, inventario: [{ sucursal_id: SUCURSAL_ID, existencia }] })
+    agregarProducto({ ...p, inventario: [{ sucursal_id: getSucursalId(), existencia }] })
     setMostrarProdNuevo(false)
   }
 
