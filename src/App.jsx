@@ -8,6 +8,7 @@ import Contactos from './pages/Contactos'
 import Clientes from './pages/Clientes'
 import Reportes from './pages/Reportes'
 import Ventas from './pages/Ventas'
+import Cotizaciones from './pages/Cotizaciones'
 import Configuracion from './pages/Configuracion'
 
 function App() {
@@ -35,6 +36,7 @@ function App() {
     clientes:      <Clientes />,
     reportes:      <Reportes />,
     ventas:        <Ventas />,
+    cotizaciones:  <Cotizaciones irA={setPagina} />,
     configuracion: <Configuracion />,
   }
 

@@ -1,5 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../lib/supabase'
+import { imprimirTicket } from '../lib/ticket'
+import { buscarCotizaciones, cargarCotizacion, cotizacionACarrito, marcarConvertida, estadoVisible } from '../lib/cotizaciones'
 
 const NEGOCIO_ID  = 'b69b5ee8-b22a-426c-8426-cdf758a12b95'
 const SUCURSAL_ID = '8e56bb7a-9041-4741-a468-4ba68a97f163'
@@ -41,18 +43,48 @@ export default function Caja() {
   const [mostrarEspera, setMostrarEspera]     = useState(false)
   const [descuentoGlobal, setDescuentoGlobal] = useState(0)
   const [totalEditable, setTotalEditable]     = useState(false)
-  const [metodoPago, setMetodoPago]           = useState('efectivo')
+  const [metodoPago, setMetodoPago]           = useState(() => localStorage.getItem('pos_metodo_pago') || 'efectivo')
+  const [pagoDividido, setPagoDividido]       = useState(() => {
+    try { return JSON.parse(localStorage.getItem('pos_pago_dividido') || 'false') } catch { return false }
+  })
+  const [pagosSplit, setPagosSplit]           = useState(() => {
+    try {
+      const g = localStorage.getItem('pos_pagos_split')
+      return g ? JSON.parse(g) : [{ id: 1, metodo: 'efectivo', monto: '' }]
+    } catch { return [{ id: 1, metodo: 'efectivo', monto: '' }] }
+  })
   const [montoPago, setMontoPago]             = useState('')
-  const [contacto, setContacto]               = useState(null)
+  const [contacto, setContacto]               = useState(() => {
+    try {
+      const g = localStorage.getItem('pos_contacto')
+      return g ? JSON.parse(g) : null
+    } catch { return null }
+  })
   const [busqContacto, setBusqContacto]       = useState('')
   const [contactos, setContactos]             = useState([])
   const [creandoContacto, setCreandoContacto] = useState(false)
   const [nuevoContacto, setNuevoContacto]     = useState({ nombre: '', telefono: '', colonia: '', direccion: '' })
   const [guardandoContacto, setGuardandoContacto] = useState(false)
+  const [mostrarProdNuevo, setMostrarProdNuevo] = useState(false)
+  const [prodNuevo, setProdNuevo]             = useState({ nombre: '', precio: '', costo: '', existencia: '', peso: '' })
+  const [prodNuevoError, setProdNuevoError]   = useState('')
+  const [guardandoProd, setGuardandoProd]     = useState(false)
   const [mostrarFlete, setMostrarFlete]       = useState(false)
   const [nuevoFlete, setNuevoFlete]           = useState({ descripcion: 'Flete foráneo', monto: '' })
   const [filaCarrito, setFilaCarrito]         = useState(null)
-  const [cliente, setCliente]                 = useState(null)
+  const [cotizacionRef, setCotizacionRef]     = useState(() => {
+    try { return JSON.parse(localStorage.getItem('pos_cotizacion') || 'null') } catch { return null }
+  })
+  const [mostrarCotiz, setMostrarCotiz]       = useState(false)
+  const [qCotiz, setQCotiz]                   = useState('')
+  const [cotizLista, setCotizLista]           = useState([])
+  const [cargandoCotiz, setCargandoCotiz]     = useState(false)
+  const [cliente, setCliente]                = useState(() => {
+    try {
+      const g = localStorage.getItem('pos_cliente')
+      return g ? JSON.parse(g) : null
+    } catch { return null }
+  })
   const [busqCliente, setBusqCliente]         = useState('')
   const [clientesResultados, setClientesResultados] = useState([])
   const [procesando, setProcesando]           = useState(false)
@@ -76,6 +108,60 @@ useEffect(() => {
     localStorage.setItem('pos_carrito', JSON.stringify(carrito))
   }, [carrito])
 
+  // Cotización de origen (si el carrito viene de una cotización)
+  useEffect(() => {
+    if (cotizacionRef) localStorage.setItem('pos_cotizacion', JSON.stringify(cotizacionRef))
+    else localStorage.removeItem('pos_cotizacion')
+  }, [cotizacionRef])
+
+  // Lista del selector de cotizaciones
+  useEffect(() => {
+    if (!mostrarCotiz) return
+    const timer = setTimeout(async () => {
+      setCargandoCotiz(true)
+      try { setCotizLista(await buscarCotizaciones({ q: qCotiz, estado: 'vigentes', limite: 12 })) } catch { setCotizLista([]) }
+      setCargandoCotiz(false)
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [mostrarCotiz, qCotiz])
+
+  const abrirCotizacion = async (c) => {
+    try {
+      const { cot, items } = await cargarCotizacion(c.id)
+      if (estadoVisible(cot) !== 'vigente') { setError('Esa cotización ya no está vigente.'); return }
+      const { carrito: nuevo, avisos } = await cotizacionACarrito(cot, items)
+      if (carrito.length > 0) ponerEnEspera()
+      setCarrito(nuevo)
+      setContacto(cot.contacto || null)
+      setCliente(cot.cliente || null)
+      setDescuentoGlobal(0)
+      setCotizacionRef({ id: cot.id, folio: cot.folio, avisos })
+      setMostrarCotiz(false); setQCotiz('')
+      setTimeout(() => inputRef.current?.focus(), 100)
+    } catch (e) { setError(e.message) }
+  }
+
+  // Persistir contacto de entrega y cliente de facturación/crédito
+  useEffect(() => {
+    if (contacto) localStorage.setItem('pos_contacto', JSON.stringify(contacto))
+    else localStorage.removeItem('pos_contacto')
+  }, [contacto])
+
+  useEffect(() => {
+    if (cliente) localStorage.setItem('pos_cliente', JSON.stringify(cliente))
+    else localStorage.removeItem('pos_cliente')
+  }, [cliente])
+
+  // Persistir método de pago y renglones de pago dividido
+  useEffect(() => {
+    localStorage.setItem('pos_metodo_pago', metodoPago)
+  }, [metodoPago])
+
+  useEffect(() => {
+    localStorage.setItem('pos_pago_dividido', JSON.stringify(pagoDividido))
+    localStorage.setItem('pos_pagos_split', JSON.stringify(pagosSplit))
+  }, [pagoDividido, pagosSplit])
+
   // Sincronizar input total
   useEffect(() => {
     if (totalRef.current) totalRef.current.value = total.toFixed(2)
@@ -89,7 +175,7 @@ useEffect(() => {
       const palabras = busqueda.trim().split(/\s+/)
       let query = supabase
         .from('productos')
-        .select('id, nombre, clave, codigo_barras, precio_venta, costo, factor, activo, ventas_recientes, inventario(existencia, sucursal_id)')
+        .select('id, nombre, clave, codigo_barras, precio_venta, costo, factor, peso_kg, precio_2, mayoreo_2, precio_3, mayoreo_3, activo, ventas_recientes, inventario(existencia, sucursal_id)')
         .eq('activo', true)
         .order('ventas_recientes', { ascending: false })
         .limit(8)
@@ -124,7 +210,7 @@ useEffect(() => {
       if (!busqCliente.trim()) { setClientesResultados([]); return }
       const { data } = await supabase
         .from('clientes')
-        .select('id, nombre, rfc, telefono, credito_limite, saldo')
+        .select('id, nombre, rfc, telefono, credito_limite, saldo, saldo_a_favor')
         .eq('activo', true)
         .ilike('nombre', `%${busqCliente}%`)
         .limit(5)
@@ -153,7 +239,10 @@ useEffect(() => {
       }, 50)
       return [...prev, {
         id: p.id, nombre: p.nombre, clave: p.clave, clave_alterna: p.codigo_barras,
-        precio, costo: p.costo, factor: p.factor, existencia,
+        precio, costo: p.costo, factor: p.factor, peso: parseFloat(p.peso_kg) || 0, existencia,
+        alt: [[p.precio_2, p.mayoreo_2, 'P2'], [p.precio_3, p.mayoreo_3, 'P3']]
+          .filter(([pr]) => parseFloat(pr) > 0)
+          .map(([pr, my, et]) => ({ et, precio: Math.round(parseFloat(pr) * 1.16 * 100) / 100, min: parseFloat(my) || 0 })),
         cantidad: 1, descuento: 0,
       }]
     })
@@ -211,6 +300,42 @@ useEffect(() => {
     inputRef.current?.focus()
   }
 
+  const abrirProductoNuevo = () => {
+    setProdNuevo({ nombre: busqueda.trim(), precio: '', costo: '', existencia: '', peso: '' })
+    setProdNuevoError('')
+    setMostrarProdNuevo(true)
+    setBusqueda(''); setResultados([]); setSeleccionado(-1)
+  }
+
+  const cerrarProductoNuevo = () => {
+    setMostrarProdNuevo(false)
+    setProdNuevoError('')
+    inputRef.current?.focus()
+  }
+
+  const guardarProductoNuevo = async () => {
+    const precio = parseFloat(prodNuevo.precio)
+    if (!prodNuevo.nombre.trim() || !(precio > 0) || guardandoProd) return
+    setGuardandoProd(true)
+    setProdNuevoError('')
+    const existencia = parseFloat(prodNuevo.existencia) || 0
+    const { data, error } = await supabase.rpc('crear_producto_nuevo', {
+      p_nombre: prodNuevo.nombre.trim(),
+      p_precio_venta_iva: precio,
+      p_costo_iva: parseFloat(prodNuevo.costo) || 0,
+      p_existencia: existencia,
+      p_peso_kg: parseFloat(prodNuevo.peso) || 0,
+    })
+    setGuardandoProd(false)
+    const p = Array.isArray(data) ? data[0] : data
+    if (error || !p) {
+      setProdNuevoError(error?.message || 'No se pudo crear el producto')
+      return
+    }
+    agregarProducto({ ...p, inventario: [{ sucursal_id: SUCURSAL_ID, existencia }] })
+    setMostrarProdNuevo(false)
+  }
+
   const quitarProducto = (id) => {
     setCarrito(prev => prev.filter(i => i.id !== id))
     inputRef.current?.focus()
@@ -221,13 +346,14 @@ useEffect(() => {
     const nueva = {
       id: Date.now(),
       hora: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
-      carrito: [...carrito], contacto, cliente, descuentoGlobal,
+      carrito: [...carrito], contacto, cliente, descuentoGlobal, cotizacionRef,
     }
     const nuevaLista = [...enEspera, nueva]
     setEnEspera(nuevaLista)
     localStorage.setItem('pos_en_espera', JSON.stringify(nuevaLista))
     setCarrito([]); localStorage.removeItem('pos_carrito')
     setContacto(null); setBusqContacto(''); setCliente(null); setBusqCliente(''); setDescuentoGlobal(0)
+    setCotizacionRef(null)
     setCreandoContacto(false)
     setMostrarFlete(false)
     setFilaCarrito(null)
@@ -241,6 +367,7 @@ useEffect(() => {
     setContacto(item.contacto)
     setCliente(item.cliente || null)
     setDescuentoGlobal(item.descuentoGlobal || 0)
+    setCotizacionRef(item.cotizacionRef || null)
     const nuevaLista = enEspera.filter(e => e.id !== item.id)
     setEnEspera(nuevaLista)
     localStorage.setItem('pos_en_espera', JSON.stringify(nuevaLista))
@@ -308,14 +435,43 @@ useEffect(() => {
   const recargoTotal   = Math.round(carrito.reduce((s, i) => s + (i.descuento < 0 ? i.precio * i.cantidad * (-i.descuento / 100) : 0), 0) * 100) / 100
   const subtotal      = Math.round((subtotalBruto - descItems) * 100) / 100
   const total         = subtotal
+  const pesoTotal     = carrito.reduce((s, i) => s + (i.esServicio ? 0 : (i.peso || 0) * i.cantidad), 0)
   const cambio        = Math.max(0, Number(montoPago) - total)
-  const excedeCredito = metodoPago === 'credito' && cliente && Number(cliente.credito_limite) > 0
+  const cubiertoSplit = Math.round(pagosSplit.reduce((s, p) => s + (Number(p.monto) || 0), 0) * 100) / 100
+  const faltaCubrir   = Math.round((total - cubiertoSplit) * 100) / 100
+  const splitUsaCredito = pagoDividido && pagosSplit.some(p => p.metodo === 'credito' && Number(p.monto) > 0)
+  const excedeCredito = (pagoDividido ? splitUsaCredito : metodoPago === 'credito') && cliente && Number(cliente.credito_limite) > 0
     && (Number(cliente.saldo) + total) > Number(cliente.credito_limite)
+
+  const usaSaldoAFavor = pagoDividido
+    ? pagosSplit.some(p => p.metodo === 'saldo_a_favor' && Number(p.monto) > 0)
+    : metodoPago === 'saldo_a_favor'
+  const montoSaldoAFavorUsado = pagoDividido
+    ? pagosSplit.filter(p => p.metodo === 'saldo_a_favor').reduce((s, p) => s + (Number(p.monto) || 0), 0)
+    : (metodoPago === 'saldo_a_favor' ? total : 0)
+  const excedeSaldoAFavor = usaSaldoAFavor && cliente && montoSaldoAFavorUsado > Number(cliente.saldo_a_favor || 0)
 
   const procesarVenta = async () => {
     if (carrito.length === 0) return
-    if (metodoPago === 'credito' && !cliente) {
+    if (pagoDividido) {
+      if (Math.abs(faltaCubrir) > 0.009) {
+        setError(faltaCubrir > 0 ? `Faltan ${fmt(faltaCubrir)} por cubrir.` : `Los montos suman ${fmt(Math.abs(faltaCubrir))} de más.`)
+        return
+      }
+      if (splitUsaCredito && !cliente) {
+        setError('Selecciona un cliente para poder usar crédito en el pago dividido.')
+        return
+      }
+    } else if (metodoPago === 'credito' && !cliente) {
       setError('Selecciona un cliente para ventas a crédito.')
+      return
+    }
+    if (usaSaldoAFavor && !cliente) {
+      setError('Selecciona un cliente para poder usar su saldo a favor.')
+      return
+    }
+    if (excedeSaldoAFavor) {
+      setError(`El cliente solo tiene ${fmt(cliente.saldo_a_favor)} de saldo a favor disponible.`)
       return
     }
     setProcesando(true)
@@ -351,6 +507,7 @@ useEffect(() => {
           cantidad:        i.cantidad,
           precio_unitario: i.precio,
           costo_unitario:  Math.round((i.costo / (i.factor || 1)) * 100) / 100,
+          peso_unitario:   i.esServicio ? 0 : (i.peso || 0),
           descuento:       Math.round(descUnit * i.cantidad * 100) / 100,
           tasa_iva:        0,
           subtotal:        Math.round((i.precio - descUnit) * i.cantidad * 100) / 100,
@@ -359,15 +516,22 @@ useEffect(() => {
       const { error: eItems } = await supabase.from('venta_items').insert(items)
       if (eItems) throw new Error(eItems.message)
 
-      const { error: ePago } = await supabase.from('pagos').insert({
-        venta_id: venta.id, metodo: metodoPago, monto: Math.round(total * 100) / 100,
-      })
+      const pagosAGuardar = pagoDividido
+        ? pagosSplit.filter(p => Number(p.monto) > 0).map(p => ({ venta_id: venta.id, metodo: p.metodo, monto: Math.round(Number(p.monto) * 100) / 100 }))
+        : [{ venta_id: venta.id, metodo: metodoPago, monto: Math.round(total * 100) / 100 }]
+      const { error: ePago } = await supabase.from('pagos').insert(pagosAGuardar)
       if (ePago) throw new Error(ePago.message)
 
-      setVentaExitosa({ folio, total, cambio, contacto, cliente, metodoPago, items: [...carrito], descItems, descuentoTotal, recargoTotal })
+      if (cotizacionRef?.id) {
+        // Si falla no se cancela la venta ya cobrada; la cotización simplemente queda vigente
+        try { await marcarConvertida(cotizacionRef.id, venta.id) } catch { /* ignorar */ }
+        setCotizacionRef(null)
+      }
+      setVentaExitosa({ folio, total, cambio, contacto, cliente, pagos: pagosAGuardar, items: [...carrito], descItems, descuentoTotal, recargoTotal })
       setCarrito([]); localStorage.removeItem('pos_carrito')
       setDescuentoGlobal(0); setMontoPago('')
       setContacto(null); setBusqContacto(''); setCliente(null); setBusqCliente(''); setMetodoPago('efectivo')
+      setPagoDividido(false); setPagosSplit([{ id: 1, metodo: 'efectivo', monto: '' }])
       setCreandoContacto(false)
       setMostrarFlete(false)
       setFilaCarrito(null)
@@ -393,6 +557,26 @@ useEffect(() => {
 
       {/* Panel izquierdo */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'hidden' }}>
+
+        {/* Banner: el carrito viene de una cotización */}
+        {cotizacionRef && (
+          <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '10px', padding: '10px 14px', fontSize: '13px', color: '#1e3a8a' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+              <b>📋 Cobrando cotización {cotizacionRef.folio}</b>
+              <button onClick={() => setCotizacionRef(null)} title="Desvincular (la cotización seguirá vigente)"
+                style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#1e3a8a', fontSize: '12px', textDecoration: 'underline' }}>Desvincular</button>
+            </div>
+            {(cotizacionRef.avisos || []).length > 0 && (
+              <ul style={{ margin: '6px 0 0', paddingLeft: '18px', color: '#92400e' }}>
+                {cotizacionRef.avisos.map((a, i) => (
+                  <li key={i}>{a.faltante
+                    ? `${a.nombre}: ya no está en el catálogo`
+                    : `${a.nombre}: cotizado a ${fmt(a.cotizado)}, hoy el precio es ${fmt(a.actual)} (se respeta lo cotizado)`}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {/* Búsqueda */}
         <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', padding: '1rem', position: 'relative' }}>
@@ -421,12 +605,81 @@ useEffect(() => {
                 color: 'white', border: 'none', cursor: 'pointer'
               }}>📋 En espera ({enEspera.length})</button>
             )}
+            <button onClick={() => setMostrarCotiz(v => !v)} style={{
+              padding: '6px 14px', borderRadius: '6px', fontSize: '13px', fontWeight: '600',
+              background: mostrarCotiz ? '#1a1a2e' : '#f97316',
+              color: 'white', border: 'none', cursor: 'pointer'
+            }}>📄 Cotizaciones</button>
             <button onClick={() => setMostrarFlete(!mostrarFlete)} style={{
               padding: '6px 14px', borderRadius: '6px', fontSize: '13px', fontWeight: '600',
               background: mostrarFlete ? '#1a1a2e' : '#0C447C',
               color: 'white', border: 'none', cursor: 'pointer'
             }}>🚚 + Flete/Servicio</button>
+            <button onClick={abrirProductoNuevo} style={{
+              padding: '6px 14px', borderRadius: '6px', fontSize: '13px', fontWeight: '600',
+              background: mostrarProdNuevo ? '#1a1a2e' : '#166534',
+              color: 'white', border: 'none', cursor: 'pointer'
+            }}>➕ Producto nuevo</button>
           </div>
+
+          {/* Alta rápida de producto fuera de catálogo */}
+          {mostrarProdNuevo && (() => {
+            const pv = parseFloat(prodNuevo.precio) || 0
+            const co = parseFloat(prodNuevo.costo) || 0
+            const margen = pv > 0 && co > 0 ? ((pv - co) / pv) * 100 : null
+            const valido = prodNuevo.nombre.trim() && pv > 0
+            const inp = { width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', boxSizing: 'border-box' }
+            const lbl = { fontSize: '11px', color: '#666', fontWeight: '600', display: 'block', marginBottom: '2px' }
+            const enter = e => { if (e.key === 'Enter') { e.preventDefault(); guardarProductoNuevo() } else if (e.key === 'Escape') cerrarProductoNuevo() }
+            return (
+              <div style={{ marginTop: '8px', padding: '10px', borderRadius: '8px', background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
+                <p style={{ margin: '0 0 8px', fontSize: '12px', color: '#166534', fontWeight: '700' }}>PRODUCTO NUEVO — precios con IVA incluido</p>
+                <label style={lbl}>Nombre</label>
+                <input type="text" value={prodNuevo.nombre} autoFocus onKeyDown={enter}
+                  onChange={e => setProdNuevo(p => ({ ...p, nombre: e.target.value }))}
+                  style={{ ...inp, marginBottom: '6px' }} />
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '6px' }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={lbl}>Precio de venta</label>
+                    <input type="number" min="0" step="0.01" value={prodNuevo.precio} onKeyDown={enter} onFocus={e => e.target.select()}
+                      onChange={e => setProdNuevo(p => ({ ...p, precio: e.target.value }))} style={inp} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={lbl}>Precio de compra</label>
+                    <input type="number" min="0" step="0.01" value={prodNuevo.costo} onKeyDown={enter} onFocus={e => e.target.select()}
+                      onChange={e => setProdNuevo(p => ({ ...p, costo: e.target.value }))} style={inp} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={lbl}>Existencia (opc.)</label>
+                    <input type="number" min="0" step="any" value={prodNuevo.existencia} onKeyDown={enter} onFocus={e => e.target.select()}
+                      onChange={e => setProdNuevo(p => ({ ...p, existencia: e.target.value }))} style={inp} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={lbl}>Peso kg/unidad</label>
+                    <input type="number" min="0" step="any" value={prodNuevo.peso} onKeyDown={enter} onFocus={e => e.target.select()}
+                      onChange={e => setProdNuevo(p => ({ ...p, peso: e.target.value }))} style={inp} />
+                  </div>
+                </div>
+                {margen !== null && (
+                  <p style={{ margin: '0 0 8px', fontSize: '12px', fontWeight: '600', color: margen < 0 ? '#e53e3e' : margen < 10 ? '#BA7517' : '#166534' }}>
+                    Margen: {margen.toFixed(1)}% · Utilidad {fmt(pv - co)} por unidad
+                  </p>
+                )}
+                {prodNuevoError && <p style={{ margin: '0 0 8px', fontSize: '12px', color: '#e53e3e' }}>{prodNuevoError}</p>}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button onClick={guardarProductoNuevo} disabled={!valido || guardandoProd} style={{
+                    flex: 1, padding: '8px', borderRadius: '6px', border: 'none', fontSize: '13px', fontWeight: '600',
+                    background: valido && !guardandoProd ? '#166534' : '#e0e0e0',
+                    color: valido && !guardandoProd ? 'white' : '#aaa',
+                    cursor: valido && !guardandoProd ? 'pointer' : 'not-allowed'
+                  }}>{guardandoProd ? 'Guardando...' : 'Guardar y agregar al carrito'}</button>
+                  <button onClick={cerrarProductoNuevo} style={{
+                    padding: '8px 14px', borderRadius: '6px', border: '1px solid #ddd', background: 'white', fontSize: '13px', cursor: 'pointer'
+                  }}>Cancelar</button>
+                </div>
+              </div>
+            )
+          })()}
 
           {/* Mini-formulario de flete/servicio */}
           {mostrarFlete && (
@@ -455,6 +708,25 @@ useEffect(() => {
           )}
 
           {/* Panel ventas en espera */}
+          {mostrarCotiz && (
+            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'white', border: '1px solid #e0e0e0', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.12)', zIndex: 200, marginTop: '4px', padding: '12px' }}>
+              <p style={{ margin: '0 0 8px', fontSize: '12px', color: '#888', fontWeight: '600' }}>COTIZACIONES VIGENTES — clic para cobrar</p>
+              <input autoFocus value={qCotiz} onChange={e => setQCotiz(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') setMostrarCotiz(false) }}
+                placeholder="Buscar por folio o cliente..."
+                style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', boxSizing: 'border-box', marginBottom: '8px' }} />
+              {cargandoCotiz && <p style={{ margin: 0, fontSize: '12px', color: '#888' }}>Buscando...</p>}
+              {!cargandoCotiz && cotizLista.length === 0 && <p style={{ margin: 0, fontSize: '13px', color: '#aaa' }}>No hay cotizaciones vigentes</p>}
+              {cotizLista.map(c => (
+                <div key={c.id} onClick={() => abrirCotizacion(c)}
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', borderRadius: '6px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', fontSize: '13px' }}
+                  onMouseEnter={e => e.currentTarget.style.background = '#fff7ed'} onMouseLeave={e => e.currentTarget.style.background = 'white'}>
+                  <span><b>{c.folio}</b> · {c.nombre_cliente || 'Público en general'}{c.es_envio ? ' 🚚' : ''}</span>
+                  <b style={{ color: '#f97316' }}>{fmt(c.total)}</b>
+                </div>
+              ))}
+            </div>
+          )}
+
           {mostrarEspera && enEspera.length > 0 && (
             <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'white', border: '1px solid #e0e0e0', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.12)', zIndex: 200, marginTop: '4px', padding: '12px' }}>
               <p style={{ margin: '0 0 10px', fontSize: '12px', color: '#888', fontWeight: '600' }}>VENTAS EN ESPERA — clic para recuperar</p>
@@ -479,7 +751,7 @@ useEffect(() => {
           )}
 
           {/* Resultados búsqueda */}
-          {(resultados.length > 0 || buscando) && (
+          {(resultados.length > 0 || buscando || busqueda.trim()) && (
             <div style={{ position: 'absolute', top: '100%', left: '1rem', right: '1rem', background: 'white', border: '1px solid #e0e0e0', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.12)', zIndex: 100, marginTop: '4px' }}>
               {buscando && <p style={{ padding: '1rem', color: '#888', margin: 0 }}>Buscando...</p>}
               {resultados.map((p, idx) => (
@@ -501,6 +773,12 @@ useEffect(() => {
                   <p style={{ margin: 0, fontSize: '15px', fontWeight: '700', color: '#f97316' }}>{fmt(Math.round(p.precio_venta * 1.16 * 100) / 100)}</p>
                 </div>
               ))}
+              {!buscando && busqueda.trim() && (
+                <div onClick={abrirProductoNuevo}
+                  style={{ padding: '10px 1rem', cursor: 'pointer', background: '#f0fdf4', color: '#166534', fontSize: '13px', fontWeight: '600', borderRadius: '0 0 8px 8px' }}>
+                  {resultados.length === 0 ? 'Sin resultados — ' : ''}➕ Crear producto nuevo «{busqueda.trim()}»
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -510,7 +788,7 @@ useEffect(() => {
           <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid #e0e0e0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h3 style={{ margin: 0, fontSize: '15px', color: '#1a1a2e' }}>Carrito ({carrito.length} productos)</h3>
             {carrito.length > 0 && (
-              <button onClick={() => { setCarrito([]); localStorage.removeItem('pos_carrito'); cantRefs.current = {}; setFilaCarrito(null); inputRef.current?.focus() }}
+              <button onClick={() => { setCarrito([]); setCotizacionRef(null); localStorage.removeItem('pos_carrito'); cantRefs.current = {}; setFilaCarrito(null); inputRef.current?.focus() }}
                 style={{ fontSize: '12px', color: '#e53e3e', background: 'none', border: 'none', cursor: 'pointer' }}>
                 Limpiar todo
               </button>
@@ -599,6 +877,7 @@ useEffect(() => {
                         </td>
                         <td style={{ ...td, textAlign: 'right' }}>
                           <input
+                            key={(Math.round(item.precio * (1 - item.descuento / 100) * 100) / 100).toFixed(2)}
                             type="text"
                             defaultValue={(Math.round(item.precio * (1 - item.descuento / 100) * 100) / 100).toFixed(2)}
                             onBlur={e => {
@@ -688,10 +967,11 @@ useEffect(() => {
         <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', padding: '1rem' }}>
           <p style={{ margin: '0 0 8px', fontSize: '12px', color: '#888', fontWeight: '600' }}>ENTREGA (OPCIONAL)</p>
           {contacto ? (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
-                <p style={{ margin: 0, fontSize: '13px', fontWeight: '600' }}>{contacto.nombre}</p>
-                <p style={{ margin: 0, fontSize: '12px', color: '#888' }}>{contacto.colonia} — {contacto.telefono}</p>
+                <p style={{ margin: 0, fontSize: '15px', fontWeight: '700' }}>{contacto.nombre}</p>
+                <p style={{ margin: '2px 0 0', fontSize: '14px', color: '#555' }}>{contacto.colonia} — {contacto.telefono}</p>
+                {contacto.direccion && <p style={{ margin: '2px 0 0', fontSize: '13px', color: '#888', lineHeight: '1.4' }}>{contacto.direccion}</p>}
               </div>
               <button onClick={() => { setContacto(null); setBusqContacto(''); setCreandoContacto(false) }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#e53e3e', fontSize: '18px' }}>✕</button>
@@ -706,12 +986,13 @@ useEffect(() => {
                 <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'white', border: '1px solid #e0e0e0', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 100, marginTop: '4px' }}>
                   {contactos.map(c => (
                     <div key={c.id} onClick={() => { setContacto(c); setContactos([]); setBusqContacto('') }}
-                      style={{ padding: '8px 1rem', cursor: 'pointer', borderBottom: '1px solid #f0f0f0' }}
+                      style={{ padding: '10px 1rem', cursor: 'pointer', borderBottom: '1px solid #f0f0f0' }}
                       onMouseEnter={e => e.currentTarget.style.background = '#f9f9f9'}
                       onMouseLeave={e => e.currentTarget.style.background = 'white'}
                     >
-                      <p style={{ margin: 0, fontSize: '13px', fontWeight: '600' }}>{c.nombre}</p>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#888' }}>{c.colonia} — {c.telefono}</p>
+                      <p style={{ margin: 0, fontSize: '15px', fontWeight: '700' }}>{c.nombre}</p>
+                      <p style={{ margin: '2px 0 0', fontSize: '14px', color: '#555' }}>{c.colonia} — {c.telefono}</p>
+                      {c.direccion && <p style={{ margin: '2px 0 0', fontSize: '13px', color: '#888', lineHeight: '1.4' }}>{c.direccion}</p>}
                     </div>
                   ))}
                 </div>
@@ -779,6 +1060,11 @@ useEffect(() => {
                   {excedeCredito && ' ⚠️ Esta venta excede el límite de crédito'}
                 </p>
               )}
+              {Number(cliente.saldo_a_favor) > 0 && (
+                <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#1D9E75', fontWeight: '600' }}>
+                  💰 Saldo a favor disponible: {fmt(cliente.saldo_a_favor)}
+                </p>
+              )}
             </div>
           ) : (
             <div style={{ position: 'relative' }}>
@@ -815,6 +1101,12 @@ useEffect(() => {
               <span style={{ color: '#888' }}>Subtotal</span>
               <span>{fmt(subtotalBruto)}</span>
             </div>
+            {pesoTotal > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                <span style={{ color: '#888' }}>⚖ Peso total</span>
+                <span>{pesoTotal.toLocaleString('es-MX', { maximumFractionDigits: 1 })} kg</span>
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px' }}>
               <span style={{ color: '#888' }}>Descuento global %</span>
               <input type="number" min="0" max="100" step="1" value={descuentoGlobal}
@@ -881,37 +1173,96 @@ useEffect(() => {
 
         {/* Método de pago */}
         <div style={{ background: 'white', borderRadius: '10px', border: '1px solid #e0e0e0', padding: '1rem' }}>
-          <p style={{ margin: '0 0 8px', fontSize: '12px', color: '#888', fontWeight: '600' }}>MÉTODO DE PAGO</p>
-          <div style={{ display: 'flex', gap: '6px', marginBottom: '10px', flexWrap: 'wrap' }}>
-            {[
-              { id: 'efectivo',      label: '💵 Efectivo' },
-              { id: 'tarjeta',       label: '💳 Tarjeta' },
-              { id: 'transferencia', label: '🏦 Transf.' },
-              { id: 'credito',       label: '📋 Crédito' },
-            ].map(m => (
-              <button key={m.id} onClick={() => setMetodoPago(m.id)} style={{
-                flex: 1, padding: '8px 6px', borderRadius: '8px', fontSize: '12px', fontWeight: '600',
-                background: metodoPago === m.id ? '#1a1a2e' : 'white',
-                color: metodoPago === m.id ? 'white' : '#555',
-                border: '1px solid #ddd', cursor: 'pointer'
-              }}>{m.label}</button>
-            ))}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <p style={{ margin: 0, fontSize: '12px', color: '#888', fontWeight: '600' }}>MÉTODO DE PAGO</p>
+            <button onClick={() => {
+              const div = !pagoDividido
+              setPagoDividido(div)
+              if (div) setPagosSplit([{ id: 1, metodo: 'efectivo', monto: total.toFixed(2) }])
+              setError(null)
+            }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '11px', color: '#534AB7', fontWeight: '600', textDecoration: 'underline' }}>
+              {pagoDividido ? '✕ Cancelar división' : '💳 Dividir en varios métodos'}
+            </button>
           </div>
-          {metodoPago === 'efectivo' && (
-            <div>
-              <input type="number" placeholder="Monto recibido" value={montoPago}
-                onChange={e => setMontoPago(e.target.value)}
-                onFocus={e => e.target.select()}
-                onWheel={e => e.target.blur()}
-                onKeyDown={e => { if (e.key === 'Enter') procesarVenta() }}
-                style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #ddd', fontSize: '16px', textAlign: 'right', boxSizing: 'border-box', marginBottom: '8px' }}
-              />
-              {cambio > 0 && (
-                <div style={{ background: '#f0fdf4', borderRadius: '8px', padding: '10px', display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ fontSize: '14px', color: '#1D9E75', fontWeight: '600' }}>Cambio</span>
-                  <span style={{ fontSize: '18px', color: '#1D9E75', fontWeight: '700' }}>{fmt(cambio)}</span>
+
+          {!pagoDividido && (
+            <>
+              <div style={{ display: 'flex', gap: '6px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                {[
+                  { id: 'efectivo',      label: '💵 Efectivo' },
+                  { id: 'tarjeta',       label: '💳 Tarjeta' },
+                  { id: 'transferencia', label: '🏦 Transf.' },
+                  { id: 'credito',       label: '📋 Crédito' },
+                  ...(cliente && Number(cliente.saldo_a_favor) > 0 ? [{ id: 'saldo_a_favor', label: '💰 Saldo a favor' }] : []),
+                ].map(m => (
+                  <button key={m.id} onClick={() => setMetodoPago(m.id)} style={{
+                    flex: 1, padding: '8px 6px', borderRadius: '8px', fontSize: '12px', fontWeight: '600',
+                    background: metodoPago === m.id ? '#1a1a2e' : 'white',
+                    color: metodoPago === m.id ? 'white' : '#555',
+                    border: '1px solid #ddd', cursor: 'pointer'
+                  }}>{m.label}</button>
+                ))}
+              </div>
+              {metodoPago === 'saldo_a_favor' && cliente && (
+                <p style={{ margin: '0 0 10px', fontSize: '12px', color: Number(total) > Number(cliente.saldo_a_favor) ? '#e53e3e' : '#1D9E75' }}>
+                  Disponible: {fmt(cliente.saldo_a_favor)}
+                  {Number(total) > Number(cliente.saldo_a_favor) && ' ⚠️ El total de la venta excede el saldo disponible'}
+                </p>
+              )}
+              {metodoPago === 'efectivo' && (
+                <div>
+                  <input type="number" placeholder="Monto recibido" value={montoPago}
+                    onChange={e => setMontoPago(e.target.value)}
+                    onFocus={e => e.target.select()}
+                    onWheel={e => e.target.blur()}
+                    onKeyDown={e => { if (e.key === 'Enter') procesarVenta() }}
+                    style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #ddd', fontSize: '16px', textAlign: 'right', boxSizing: 'border-box', marginBottom: '8px' }}
+                  />
+                  {cambio > 0 && (
+                    <div style={{ background: '#f0fdf4', borderRadius: '8px', padding: '10px', display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: '14px', color: '#1D9E75', fontWeight: '600' }}>Cambio</span>
+                      <span style={{ fontSize: '18px', color: '#1D9E75', fontWeight: '700' }}>{fmt(cambio)}</span>
+                    </div>
+                  )}
                 </div>
               )}
+            </>
+          )}
+
+          {pagoDividido && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {pagosSplit.map((p, idx) => (
+                <div key={p.id} style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  <select value={p.metodo} onChange={e => setPagosSplit(prev => prev.map(x => x.id === p.id ? { ...x, metodo: e.target.value } : x))}
+                    style={{ padding: '8px 6px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '12px', flex: '0 0 108px' }}>
+                    <option value="efectivo">💵 Efectivo</option>
+                    <option value="tarjeta">💳 Tarjeta</option>
+                    <option value="transferencia">🏦 Transf.</option>
+                    <option value="credito">📋 Crédito</option>
+                    {cliente && Number(cliente.saldo_a_favor) > 0 && <option value="saldo_a_favor">💰 Saldo a favor</option>}
+                  </select>
+                  <input type="number" placeholder="Monto" value={p.monto}
+                    onChange={e => setPagosSplit(prev => prev.map(x => x.id === p.id ? { ...x, monto: e.target.value } : x))}
+                    onFocus={e => e.target.select()} onWheel={e => e.target.blur()}
+                    style={{ flex: 1, padding: '8px 10px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '14px', textAlign: 'right' }} />
+                  {pagosSplit.length > 1 && (
+                    <button onClick={() => setPagosSplit(prev => prev.filter(x => x.id !== p.id))}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#e53e3e', fontSize: '16px', flexShrink: 0 }}>✕</button>
+                  )}
+                </div>
+              ))}
+              <button onClick={() => setPagosSplit(prev => [...prev, { id: Date.now(), metodo: 'tarjeta', monto: faltaCubrir > 0 ? faltaCubrir.toFixed(2) : '' }])}
+                style={{ padding: '6px', borderRadius: '6px', border: '1px dashed #ccc', background: 'white', color: '#888', fontSize: '12px', cursor: 'pointer' }}>+ Agregar método</button>
+
+              <div style={{
+                display: 'flex', justifyContent: 'space-between', padding: '8px 10px', borderRadius: '6px',
+                background: Math.abs(faltaCubrir) <= 0.009 ? '#f0fdf4' : '#fef3c7',
+              }}>
+                <span style={{ fontSize: '13px', fontWeight: '600', color: Math.abs(faltaCubrir) <= 0.009 ? '#1D9E75' : '#BA7517' }}>
+                  {Math.abs(faltaCubrir) <= 0.009 ? '✓ Cubierto completo' : faltaCubrir > 0 ? 'Falta cubrir' : 'Sobran'}
+                </span>
+                {Math.abs(faltaCubrir) > 0.009 && <span style={{ fontSize: '13px', fontWeight: '700', color: '#BA7517' }}>{fmt(Math.abs(faltaCubrir))}</span>}
+              </div>
             </div>
           )}
         </div>
@@ -922,95 +1273,63 @@ useEffect(() => {
           </p>
         )}
 
-        <button onClick={procesarVenta} disabled={carrito.length === 0 || procesando || (metodoPago === 'credito' && !cliente)} style={{
-          padding: '16px', borderRadius: '10px', fontSize: '18px', fontWeight: '700',
-          background: carrito.length > 0 && !procesando && !(metodoPago === 'credito' && !cliente) ? '#f97316' : '#e0e0e0',
-          color: carrito.length > 0 && !procesando && !(metodoPago === 'credito' && !cliente) ? 'white' : '#aaa',
-          border: 'none', cursor: carrito.length > 0 && !procesando && !(metodoPago === 'credito' && !cliente) ? 'pointer' : 'not-allowed',
-        }}>
+        {(() => {
+          const bloqueado = carrito.length === 0 || procesando
+            || (!pagoDividido && metodoPago === 'credito' && !cliente)
+            || (pagoDividido && (Math.abs(faltaCubrir) > 0.009 || (splitUsaCredito && !cliente)))
+            || (usaSaldoAFavor && (!cliente || excedeSaldoAFavor))
+          return (
+            <button onClick={procesarVenta} disabled={bloqueado} style={{
+              padding: '16px', borderRadius: '10px', fontSize: '18px', fontWeight: '700',
+              background: !bloqueado ? '#f97316' : '#e0e0e0',
+              color: !bloqueado ? 'white' : '#aaa',
+              border: 'none', cursor: carrito.length > 0 && !procesando ? 'pointer' : 'not-allowed',
+            }}>
           {procesando ? '⏳ Procesando...' : `💰 Cobrar ${fmt(total)}`}
         </button>
+          )
+        })()}
       </div>
     </div>
   )
 }
 
 function TicketVenta({ venta, onNueva }) {
-  useEffect(() => { window.print() }, [])
+  const datosTicket = () => ({
+    folio: venta.folio,
+    fecha: new Date().toLocaleString('es-MX'),
+    cliente: venta.cliente ? { nombre: venta.cliente.nombre, rfc: venta.cliente.rfc } : null,
+    contacto: venta.contacto ? { nombre: venta.contacto.nombre, telefono: venta.contacto.telefono, direccion: venta.contacto.direccion } : null,
+    items: venta.items.map(item => {
+      const precioFinal = Math.round(item.precio * (1 - item.descuento / 100) * 100) / 100
+      const totalItem = Math.round(precioFinal * item.cantidad * 100) / 100
+      return { nombre: item.nombre, cantidad: item.cantidad, precioUnitario: precioFinal, subtotal: totalItem }
+    }),
+    descuentoTotal: venta.descuentoTotal || 0,
+    recargoTotal: venta.recargoTotal || 0,
+    total: venta.total,
+    pagos: venta.pagos || [],
+    cambio: venta.cambio || 0,
+  })
+
+  useEffect(() => { imprimirTicket(datosTicket(), { silencioso: true }) }, [])
 
   return (
-    <div>
-      <div className="no-print" style={{ marginBottom: '1rem', display: 'flex', gap: '10px' }}>
-        <button onClick={onNueva} style={{ padding: '10px 20px', background: '#f97316', color: 'white', border: 'none', borderRadius: '8px', fontSize: '14px', fontWeight: '600', cursor: 'pointer' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', gap: '0.75rem' }}>
+      <div style={{ fontSize: '48px' }}>✅</div>
+      <h2 style={{ margin: 0, color: '#1a1a2e' }}>Venta registrada</h2>
+      <p style={{ margin: 0, fontSize: '16px', color: '#555' }}>Folio: <strong>{venta.folio}</strong></p>
+      <p style={{ margin: 0, fontSize: '28px', fontWeight: '700', color: '#f97316' }}>{fmt(venta.total)}</p>
+      {venta.cambio > 0 && (
+        <p style={{ margin: 0, fontSize: '15px', color: '#1D9E75', fontWeight: '600' }}>Cambio: {fmt(venta.cambio)}</p>
+      )}
+      <div style={{ display: 'flex', gap: '10px', marginTop: '1rem' }}>
+        <button onClick={onNueva} style={{ padding: '12px 24px', background: '#f97316', color: 'white', border: 'none', borderRadius: '8px', fontSize: '15px', fontWeight: '600', cursor: 'pointer' }}>
           ➕ Nueva venta
         </button>
-        <button onClick={() => window.print()} style={{ padding: '10px 20px', background: 'white', color: '#333', border: '1px solid #ddd', borderRadius: '8px', fontSize: '14px', cursor: 'pointer' }}>
+        <button onClick={() => imprimirTicket(datosTicket())} style={{ padding: '12px 24px', background: 'white', color: '#333', border: '1px solid #ddd', borderRadius: '8px', fontSize: '15px', cursor: 'pointer' }}>
           🖨️ Reimprimir
         </button>
-      </div>
-
-      <div id="ticket" style={{ maxWidth: '320px', fontFamily: 'monospace', fontSize: '12px', background: 'white', padding: '1rem', border: '1px solid #e0e0e0', borderRadius: '8px' }}>
-        <div style={{ textAlign: 'center', marginBottom: '8px' }}>
-          <p style={{ margin: 0, fontWeight: '700', fontSize: '14px' }}>MATERIALES PALENQUE</p>
-          <p style={{ margin: 0, color: '#888' }}>Palenque, Chiapas</p>
-          <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#888' }}>{new Date().toLocaleString('es-MX')}</p>
-        </div>
-        <div style={{ borderTop: '1px dashed #ccc', borderBottom: '1px dashed #ccc', padding: '6px 0', margin: '8px 0' }}>
-          <p style={{ margin: 0 }}>Folio: <strong>{venta.folio}</strong></p>
-          {venta.cliente && (
-            <>
-              <p style={{ margin: '4px 0 0' }}>Cliente: <strong>{venta.cliente.nombre}</strong></p>
-              {venta.cliente.rfc && <p style={{ margin: '2px 0 0' }}>RFC: {venta.cliente.rfc}</p>}
-            </>
-          )}
-          {venta.contacto && (
-          <>
-            <p style={{ margin: '4px 0 0' }}>Entrega: <strong>{venta.contacto.nombre}</strong></p>
-            {venta.contacto.telefono && <p style={{ margin: '2px 0 0' }}>Tel: {venta.contacto.telefono}</p>}
-            {venta.contacto.direccion && <p style={{ margin: '2px 0 0' }}>Dir: {venta.contacto.direccion}</p>}
-          </>
-        )}
-        </div>
-        <div style={{ marginTop: '8px' }}>
-          {venta.items.map((item, i) => {
-            const precioFinal = Math.round(item.precio * (1 - item.descuento / 100) * 100) / 100
-            const totalItem   = Math.round(precioFinal * item.cantidad * 100) / 100
-            return (
-              <div key={i} style={{ marginTop: i === 0 ? 0 : '7px', paddingBottom: '7px', borderBottom: i < venta.items.length - 1 ? '1px dotted #eee' : 'none' }}>
-                <div style={{ fontWeight: '600' }}>{item.nombre}</div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#555', marginTop: '2px' }}>
-                  <span>{item.cantidad} x {new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2 }).format(precioFinal)}</span>
-                  <span style={{ fontWeight: '600' }}>{new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2 }).format(totalItem)}</span>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-        <div style={{ borderTop: '1px dashed #ccc', marginTop: '8px', paddingTop: '8px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: '700', fontSize: '14px' }}>
-            <span>TOTAL</span>
-            <span>{new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(venta.total)}</span>
-          </div>
-          {(venta.descuentoTotal > 0 || venta.recargoTotal > 0) && (
-            <p style={{ margin: '4px 0 0', fontSize: '10px', color: '#aaa', fontStyle: 'italic' }}>
-              (precios de arriba ya incluyen
-              {venta.descuentoTotal > 0 ? ` descuento de ${new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(venta.descuentoTotal)}` : ''}
-              {venta.descuentoTotal > 0 && venta.recargoTotal > 0 ? ' y' : ''}
-              {venta.recargoTotal > 0 ? ` recargo de ${new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(venta.recargoTotal)}` : ''})
-            </p>
-          )}
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#888', marginTop: '2px' }}>
-            <span>Pago</span>
-            <span>{METODOS_TICKET[venta.metodoPago] || venta.metodoPago}</span>
-          </div>
-          {venta.cambio > 0 && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
-              <span>Cambio</span>
-              <span>{new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(venta.cambio)}</span>
-            </div>
-          )}
-        </div>
-        <p style={{ textAlign: 'center', marginTop: '12px', color: '#888', fontSize: '11px' }}>¡Gracias por su compra!</p>
       </div>
     </div>
   )

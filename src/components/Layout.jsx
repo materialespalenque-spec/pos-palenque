@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 const menu = [
   { id: 'caja',          label: 'Caja',          icono: '🛒' },
   { id: 'ventas',        label: 'Ventas',         icono: '🧾' },
+  { id: 'cotizaciones',  label: 'Cotizaciones',   icono: '📋' },
   { id: 'productos',     label: 'Productos',      icono: '📦' },
   { id: 'contactos',     label: 'Entregas',       icono: '📍' },
   { id: 'clientes',      label: 'Clientes',       icono: '👥' },

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { imprimirTicket } from '../lib/ticket'
 
 const hoy = () => new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0]
 
@@ -25,6 +26,7 @@ const METODOS = {
   transferencia: { label: 'Transferencia', color: '#0C447C' },
   credito:       { label: 'Crédito',       color: '#BA7517' },
   cheque:        { label: 'Cheque',        color: '#888' },
+  saldo_a_favor: { label: 'Saldo a favor', color: '#1D9E75' },
 }
 
 export default function Ventas() {
@@ -553,52 +555,21 @@ function DetalleVenta({ venta, onVolver }) {
   }
 
   const reimprimir = () => {
-    const w = window.open('', '_blank', 'width=400,height=600')
-    const metodosTexto = (venta.pagos || []).map(p => METODOS[p.metodo]?.label || p.metodo).join(', ') || '—'
-    w.document.write(`
-      <html><head><title>Ticket ${venta.folio}</title>
-      <style>body{font-family:monospace;font-size:12px;max-width:320px;margin:0 auto;padding:1rem}
-      table{width:100%;border-collapse:collapse}th{text-align:left;padding-bottom:4px}
-      td{padding-top:4px}hr{border:none;border-top:1px dashed #ccc;margin:8px 0}
-      .right{text-align:right}.center{text-align:center}.bold{font-weight:700}.total{font-size:14px}
-      </style></head><body>
-      <div class="center"><div class="bold" style="font-size:14px">MATERIALES PALENQUE</div>
-      <div>Palenque, Chiapas</div>
-      <div style="font-size:11px;color:#888">${new Date(venta.created_at).toLocaleString('es-MX')}</div></div>
-      <hr>
-      <div>Folio: <strong>${venta.folio}</strong></div>
-      ${venta.clientes ? `
-        <div>Cliente: <strong>${venta.clientes.nombre}</strong></div>
-        ${venta.clientes.rfc ? `<div>RFC: ${venta.clientes.rfc}</div>` : ''}
-      ` : ''}
-      ${contactoActual ? `
-        <div>Entrega: <strong>${contactoActual.nombre}</strong></div>
-        ${contactoActual.telefono ? `<div>Tel: ${contactoActual.telefono}</div>` : ''}
-        ${dirActual ? `<div>Dir: ${dirActual}</div>` : ''}
-      ` : ''}
-      <hr>
-      <div>
-        ${items.map((i, idx) => {
-          const totalItem   = Math.round(i.subtotal * 100) / 100
-          const precioFinal = Math.round((totalItem / Number(i.cantidad)) * 100) / 100
-          return `<div style="margin-top:${idx === 0 ? 0 : '7px'};padding-bottom:7px;${idx < items.length - 1 ? 'border-bottom:1px dotted #eee' : ''}">
-            <div style="font-weight:600">${i.nombre_producto}</div>
-            <div style="display:flex;justify-content:space-between;color:#555;margin-top:2px">
-              <span>${i.cantidad} x ${precioFinal.toFixed(2)}</span>
-              <span style="font-weight:600">${totalItem.toFixed(2)}</span>
-            </div>
-          </div>`
-        }).join('')}
-      </div>
-      <hr>
-      <div style="display:flex;justify-content:space-between" class="bold total"><span>TOTAL</span><span>$${Number(venta.total).toFixed(2)}</span></div>
-      ${(Number(venta.descuento) > 0 || Number(venta.recargo) > 0) ? `<div style="font-size:10px;color:#aaa;font-style:italic;margin-top:4px">(precios de arriba ya incluyen${Number(venta.descuento) > 0 ? ` descuento de $${Number(venta.descuento).toFixed(2)}` : ''}${Number(venta.descuento) > 0 && Number(venta.recargo) > 0 ? ' y' : ''}${Number(venta.recargo) > 0 ? ` recargo de $${Number(venta.recargo).toFixed(2)}` : ''})</div>` : ''}
-      <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-top:2px"><span>Pago</span><span>${metodosTexto}</span></div>
-      <hr><div class="center" style="color:#888;font-size:11px">¡Gracias por su compra!</div>
-      </body></html>
-    `)
-    w.document.close()
-    w.print()
+    imprimirTicket({
+      folio: venta.folio,
+      fecha: new Date(venta.created_at).toLocaleString('es-MX'),
+      cliente: venta.clientes ? { nombre: venta.clientes.nombre, rfc: venta.clientes.rfc } : null,
+      contacto: contactoActual ? { nombre: contactoActual.nombre, telefono: contactoActual.telefono, direccion: dirActual } : null,
+      items: items.map(i => ({
+        nombre: i.nombre_producto, cantidad: i.cantidad,
+        precioUnitario: Math.round((i.subtotal / Number(i.cantidad)) * 100) / 100,
+        subtotal: Math.round(i.subtotal * 100) / 100,
+      })),
+      descuentoTotal: Number(venta.descuento) || 0,
+      recargoTotal: Number(venta.recargo) || 0,
+      total: Number(venta.total),
+      pagos: venta.pagos || [],
+    })
   }
 
   const totalItems = items.reduce((s, i) => s + Number(i.subtotal), 0)
