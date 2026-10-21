@@ -6,6 +6,8 @@ import {
   enviarACaja, cancelarCotizacion, buscarCotizaciones, estadoVisible, prepararImpresion,
 } from '../lib/cotizaciones'
 import { imprimirCotizacion } from '../lib/cotizacionPrint'
+import { useSesion } from '../lib/sesion'
+import { textoExistencias } from '../lib/existencias'
 
 const IVA = 1.16
 const TABS_KEY = 'pos_cot_tabs'
@@ -60,6 +62,15 @@ export default function Cotizaciones({ irA }) {
   const [editId, setEditId]         = useState(b0?.editId || null)
   const [editFolio, setEditFolio]   = useState(b0?.editFolio || null)
   const [soloLectura, setSoloLectura] = useState(!!b0.soloLectura)
+  // Permisos del rol
+  const { tiene, perfil, sucursales } = useSesion()
+  const verCostos = tiene('ver_costos')
+  const MAXD = tiene('dar_descuentos') ? Number(perfil?.descuento_max ?? 0) : 0
+  const puedeCrear = tiene('crear_productos')
+  const verOtras = tiene('ver_otras_sucursales')
+  const esAdminSuc = tiene('cambiar_sucursal')
+  const nomSuc = id => sucursales.find(s => s.id === id)?.nombre || ''
+  const [sucFiltro, setSucFiltro] = useState('activa')
   const [carrito, setCarrito]       = useState(b0?.carrito || [])
   const [cliente, setCliente]       = useState(b0?.cliente || null)
   const [contacto, setContacto]     = useState(b0?.contacto || null)
@@ -130,9 +141,11 @@ export default function Cotizaciones({ irA }) {
     const meta = objetivo - serv
     if (!(prod > 0) || !(meta > 0)) { avisar('err', 'El total deseado debe ser mayor que los fletes/servicios'); return }
     const k = meta / prod
-    const nuevo = carrito.map(i => i.esServicio ? i : { ...i, descuento: Math.min(100, Math.round((1 - (1 - (i.descuento || 0) / 100) * k) * 1000000) / 10000) })
+    const nuevo = carrito.map(i => i.esServicio ? i : { ...i, descuento: Math.min(MAXD, Math.round((1 - (1 - (i.descuento || 0) / 100) * k) * 1000000) / 10000) })
+    const logrado = calcularTotales(nuevo).total
     setCarrito(nuevo); setDescGlobal(0); setTotalDeseado('')
-    avisar('ok', `Total ajustado a ${fmt(calcularTotales(nuevo).total)}`)
+    if (logrado > objetivo + 0.01) avisar('err', `Con tu descuento máximo (${MAXD}%) el total mínimo es ${fmt(logrado)}`)
+    else avisar('ok', `Total ajustado a ${fmt(logrado)}`)
   }
 
   const avisar = (tipo, texto) => {
@@ -225,8 +238,11 @@ export default function Cotizaciones({ irA }) {
     if (!(cantidad > 0)) { setCarrito(prev => prev.filter(i => i.id !== id)); return }
     setCarrito(prev => prev.map(i => i.id === id ? { ...i, cantidad: parseFloat(cantidad.toFixed(3)) } : i))
   }
-  const setDescuento = (id, descuento) =>
-    setCarrito(prev => prev.map(i => i.id === id ? { ...i, descuento: Math.min(descuento, 100) } : i))
+  const avisoTope = () => avisar('err', MAXD > 0 ? `Tu descuento máximo es ${MAXD}%` : 'Tu rol no puede dar descuentos')
+  const setDescuento = (id, descuento) => {
+    if (descuento > MAXD) { avisoTope(); descuento = MAXD }
+    setCarrito(prev => prev.map(i => i.id === id ? { ...i, descuento } : i))
+  }
   const quitar = id => { setCarrito(prev => prev.filter(i => i.id !== id)); inputRef.current?.focus() }
 
   const agregarFlete = () => {
@@ -253,6 +269,7 @@ export default function Cotizaciones({ irA }) {
 
   // ---------- Producto fuera de catálogo ----------
   const abrirProdNuevo = () => {
+    if (!puedeCrear) return
     setProdNuevo({ nombre: busqueda.trim(), precio: '', costo: '', existencia: '', peso: '' })
     setProdNuevoError(''); setMostrarProdNuevo(true)
     setBusqueda(''); setResultados([]); setSel(-1)
@@ -466,7 +483,7 @@ export default function Cotizaciones({ irA }) {
   // ---------- Lista ----------
   const cargarLista = async () => {
     setCargandoLista(true)
-    try { setLista(await buscarCotizaciones({ q: qLista, estado: filtro })) }
+    try { setLista(await buscarCotizaciones({ q: qLista, estado: filtro, sucursal: verOtras && sucFiltro !== 'activa' ? sucFiltro : getSucursalId() })) }
     catch (e) { avisar('err', e.message) }
     setCargandoLista(false)
   }
@@ -474,7 +491,7 @@ export default function Cotizaciones({ irA }) {
     if (vista !== 'lista') return
     const timer = setTimeout(cargarLista, 250)
     return () => clearTimeout(timer)
-  }, [vista, filtro, qLista])
+  }, [vista, filtro, qLista, sucFiltro])
 
   const cargarEnEditor = async (id, { duplicar = false } = {}) => {
     await guardarAhora('auto')   // antes de cambiar, queda guardado lo que se estaba capturando
@@ -498,7 +515,7 @@ export default function Cotizaciones({ irA }) {
     setTabs(actual); setTabActiva(key)
     restaurar(duplicar
       ? { ...v, editId: null, editFolio: null, soloLectura: false, foto: null }   // copia nueva: se guarda sola con folio nuevo
-      : { ...v, editId: cot.id, editFolio: cot.folio, soloLectura: cot.estado !== 'vigente', foto: fotoDe(v) })
+      : { ...v, editId: cot.id, editFolio: cot.folio, soloLectura: cot.estado !== 'vigente' || (cot.sucursal_id !== getSucursalId() && !esAdminSuc), foto: fotoDe(v) })
     setVista('captura')
   }
 
@@ -565,6 +582,13 @@ export default function Cotizaciones({ irA }) {
                 border: `1px solid ${filtro === k ? C.ink : '#ddd'}`, background: filtro === k ? C.ink : 'white', color: filtro === k ? 'white' : '#555',
               }}>{l}</button>
             ))}
+            {verOtras && sucursales.length > 1 && (
+              <select value={sucFiltro} onChange={e => setSucFiltro(e.target.value)} style={{ ...inp, width: 'auto', marginLeft: 'auto' }}>
+                <option value="activa">Esta sucursal</option>
+                <option value="todas">Todas las sucursales</option>
+                {sucursales.filter(s => s.id !== getSucursalId()).map(s => <option key={s.id} value={s.id}>Solo {s.nombre}</option>)}
+              </select>
+            )}
           </div>
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -581,7 +605,7 @@ export default function Cotizaciones({ irA }) {
                   const b = { padding: '5px 9px', borderRadius: '6px', border: '1px solid #ddd', background: 'white', fontSize: '12px', fontWeight: '600', cursor: 'pointer' }
                   return (
                     <tr key={c.id} style={{ opacity: ocupado === c.id ? 0.5 : 1 }}>
-                      <td style={{ ...td, fontWeight: '700' }}>{c.folio}</td>
+                      <td style={{ ...td, fontWeight: '700' }}>{c.folio}{c.sucursal_id !== getSucursalId() && <span style={{ marginLeft: '6px', fontSize: '11px', fontWeight: '600', color: '#0C447C', background: '#e8f1fb', padding: '1px 7px', borderRadius: '10px' }}>{nomSuc(c.sucursal_id)}</span>}</td>
                       <td style={td}>{fmtFecha(c.created_at)}</td>
                       <td style={td}>{c.nombre_cliente || <span style={{ color: '#aaa' }}>Público en general</span>}{c.es_envio ? ' 🚚' : ''}</td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: '700' }}>{fmt(c.total)}</td>
@@ -591,11 +615,11 @@ export default function Cotizaciones({ irA }) {
                       <td style={{ ...td, whiteSpace: 'nowrap' }}>
                         <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
                           <button style={b} onClick={() => accionLista(c, 'abrir')}>Abrir</button>
-                          {puedeUsar && <button style={{ ...b, background: C.ok, color: 'white', border: 'none' }} onClick={() => accionLista(c, 'caja')}>→ Caja</button>}
+                          {puedeUsar && (c.sucursal_id === getSucursalId() || tiene('cobrar_cot_otra_sucursal')) && <button style={{ ...b, background: C.ok, color: 'white', border: 'none' }} onClick={() => accionLista(c, 'caja')}>→ Caja</button>}
                           <button style={b} onClick={() => accionLista(c, 'carta')}>Carta</button>
                           <button style={b} onClick={() => accionLista(c, 'termico')}>Ticket</button>
                           <button style={b} onClick={() => accionLista(c, 'duplicar')}>Duplicar</button>
-                          {puedeUsar && <button style={{ ...b, color: C.err }} onClick={() => accionLista(c, 'cancelar')}>Cancelar</button>}
+                          {puedeUsar && (c.sucursal_id === getSucursalId() || esAdminSuc) && <button style={{ ...b, color: C.err }} onClick={() => accionLista(c, 'cancelar')}>Cancelar</button>}
                         </div>
                       </td>
                     </tr>
@@ -616,7 +640,7 @@ export default function Cotizaciones({ irA }) {
           <div style={{ flex: '1 1 560px', minWidth: 0 }}>
             {soloLectura && (
               <div style={{ ...card, marginBottom: '10px', background: '#fff8e1', borderColor: '#f5d77a', fontSize: '13px', fontWeight: '600', color: '#7a5b00' }}>
-                {editFolio} ya no está vigente (vencida, convertida o cancelada) y no se puede editar. Usa «Duplicar» en Guardadas para hacer una copia nueva.
+                {editFolio} no se puede editar (ya no está vigente, o es de otra sucursal). Usa «Duplicar» en Guardadas para hacer una copia nueva en esta sucursal.
               </div>
             )}
             <div style={{ ...card, position: 'relative', marginBottom: '10px' }}>
@@ -626,7 +650,7 @@ export default function Cotizaciones({ irA }) {
                 style={{ ...inp, padding: '12px 14px', fontSize: '16px' }} />
               <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
                 <button disabled={soloLectura} onClick={() => setMostrarFlete(v => !v)} style={{ ...boton(mostrarFlete ? C.ink : '#0C447C', !soloLectura), padding: '7px 14px', fontSize: '13px' }}>🚚 + Flete / servicio</button>
-                <button disabled={soloLectura} onClick={abrirProdNuevo} style={{ ...boton(mostrarProdNuevo ? C.ink : '#166534', !soloLectura), padding: '7px 14px', fontSize: '13px' }}>➕ Producto nuevo</button>
+                {puedeCrear && <button disabled={soloLectura} onClick={abrirProdNuevo} style={{ ...boton(mostrarProdNuevo ? C.ink : '#166534', !soloLectura), padding: '7px 14px', fontSize: '13px' }}>➕ Producto nuevo</button>}
               </div>
 
               {mostrarFlete && (
@@ -679,14 +703,18 @@ export default function Cotizaciones({ irA }) {
                       <div>
                         <p style={{ margin: 0, fontSize: '14px', fontWeight: '600', color: C.ink }}>{p.nombre}</p>
                         <p style={{ margin: 0, fontSize: '12px', color: C.mut }}>{p.clave}{p.codigo_barras ? ` · ${p.codigo_barras}` : ''}</p>
+                        <p style={{ margin: 0, fontSize: '12px', color: '#0C447C' }}>{textoExistencias(p, sucursales, getSucursalId(), verOtras)}</p>
                       </div>
                       <p style={{ margin: 0, fontSize: '16px', fontWeight: '700', color: C.acc }}>{fmt(r2(p.precio_venta * IVA))}</p>
                     </div>
                   ))}
-                  {!buscando && busqueda.trim() && (
+                  {puedeCrear && !buscando && busqueda.trim() && (
                     <div onClick={abrirProdNuevo} style={{ padding: '10px 16px', cursor: 'pointer', background: '#f0fdf4', color: '#166534', fontSize: '13px', fontWeight: '700' }}>
                       {resultados.length === 0 ? 'Sin resultados — ' : ''}➕ Crear producto nuevo «{busqueda.trim()}»
                     </div>
+                  )}
+                  {!puedeCrear && !buscando && busqueda.trim() && resultados.length === 0 && (
+                    <div style={{ padding: '10px 16px', color: '#999', fontSize: '13px' }}>Sin resultados</div>
                   )}
                 </div>
               )}
@@ -712,7 +740,7 @@ export default function Cotizaciones({ irA }) {
                       <th style={th}>Producto</th>
                       <th style={{ ...th, textAlign: 'center', width: '150px' }}>Cantidad</th>
                       <th style={{ ...th, textAlign: 'right', width: '130px' }}>Precio</th>
-                      <th style={{ ...th, textAlign: 'center', width: '80px' }} title="Utilidad sobre el costo. Edítala para fijar el precio">Util%</th>
+                      {verCostos && <th style={{ ...th, textAlign: 'center', width: '80px' }} title="Utilidad sobre el costo. Edítala para fijar el precio">Util%</th>}
                       <th style={{ ...th, textAlign: 'center', width: '90px' }}>Desc%</th>
                       <th style={{ ...th, textAlign: 'right', width: '110px' }}>Importe</th>
                       <th style={{ ...th, width: '36px' }}></th>
@@ -756,11 +784,11 @@ export default function Cotizaciones({ irA }) {
                                 onBlur={e => {
                                   const v = parseFloat(e.target.value.replace(/[$,]/g, ''))
                                   if (v > 0 && Math.abs(v - ef) > 0.005) setDescuento(item.id, Math.round((1 - v / item.precio) * 1000000) / 10000)
-                                  else e.target.value = ef.toFixed(2)
+                                  e.target.value = ef.toFixed(2)
                                 }}
                                 style={{ width: '92px', padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'right', fontSize: '14px' }} />
                             </td>
-                            <td style={{ ...td, textAlign: 'center' }}>
+                            {verCostos && (<td style={{ ...td, textAlign: 'center' }}>
                               {pu !== null ? (
                                 <input key={pu.toFixed(1)} defaultValue={pu.toFixed(1)} disabled={soloLectura}
                                   title="Utilidad sobre el costo: escribe 25 y el precio se ajusta"
@@ -771,11 +799,12 @@ export default function Cotizaciones({ irA }) {
                                     if (!isNaN(v) && v > -100 && Math.abs(v - pu) > 0.049) {
                                       const nuevo = r2(cu * (1 + v / 100))
                                       setDescuento(item.id, Math.round((1 - nuevo / item.precio) * 1000000) / 10000)
-                                    } else e.target.value = pu.toFixed(1)
+                                    }
+                                    e.target.value = pu.toFixed(1)
                                   }}
                                   style={{ width: '58px', padding: '6px 4px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px', fontWeight: '600', color: pu < 0 ? C.err : '#444' }} />
                               ) : <span style={{ color: '#ccc' }}>—</span>}
-                            </td>
+                            </td>)}
                             <td style={{ ...td, textAlign: 'center' }}>
                               <input type="number" min="-1000" max="100" step="1" value={item.descuento || 0} disabled={soloLectura}
                                 title="Negativo = recargo (ej. precio foráneo)"
@@ -890,9 +919,9 @@ export default function Cotizaciones({ irA }) {
             <div style={card}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px', marginBottom: '6px' }}>
                 <span style={{ color: '#666' }}>Descuento global %</span>
-                <input type="number" min="0" max="100" step="1" value={descGlobal} disabled={soloLectura}
+                <input type="number" min="0" max={MAXD} step="1" value={descGlobal} disabled={soloLectura || MAXD === 0}
                   title="Aplica el mismo % a todos los productos (no a fletes ni servicios)"
-                  onChange={e => { const v = parseFloat(e.target.value) || 0; setDescGlobal(v); setCarrito(prev => prev.map(i => i.esServicio ? i : { ...i, descuento: v })) }}
+                  onChange={e => { let v = parseFloat(e.target.value) || 0; if (v > MAXD) { avisoTope(); v = MAXD } setDescGlobal(v); setCarrito(prev => prev.map(i => i.esServicio ? i : { ...i, descuento: v })) }}
                   onFocus={e => e.target.select()} onWheel={e => e.target.blur()}
                   style={{ width: '64px', padding: '5px 6px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '14px' }} />
               </div>
@@ -910,7 +939,7 @@ export default function Cotizaciones({ irA }) {
                   <button onClick={aplicarTotalDeseado} disabled={!(parseFloat(totalDeseado) > 0)} style={{ ...boton(C.ink, parseFloat(totalDeseado) > 0), padding: '6px 10px', fontSize: '12px' }}>Aplicar</button>
                 </div>
               )}
-              {costoTot > 0 && (
+              {verCostos && costoTot > 0 && (
                 <div style={{ marginTop: '6px', padding: '6px 8px', borderRadius: '6px', background: '#f7f7f7', fontSize: '12px', color: utilidad < 0 ? C.err : '#666' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Costo (interno)</span><span>{fmt(costoTot)}</span></div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: '700' }}><span>Utilidad</span><span>{fmt(utilidad)}{utilPct !== null ? ` · ${utilPct.toFixed(1)}%` : ''}</span></div>

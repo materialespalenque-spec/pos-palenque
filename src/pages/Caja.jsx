@@ -2,6 +2,8 @@ import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { imprimirTicket } from '../lib/ticket'
 import { getSucursalId } from '../lib/config'
+import { useSesion } from '../lib/sesion'
+import { textoExistencias } from '../lib/existencias'
 import { buscarCotizaciones, cargarCotizacion, cotizacionACarrito, marcarConvertida, estadoVisible } from '../lib/cotizaciones'
 
 const NEGOCIO_ID  = 'b69b5ee8-b22a-426c-8426-cdf758a12b95'
@@ -42,8 +44,24 @@ export default function Caja() {
   })
   const [mostrarEspera, setMostrarEspera]     = useState(false)
   const [descuentoGlobal, setDescuentoGlobal] = useState(0)
+  // Permisos del rol
+  const { tiene, perfil, sucursales } = useSesion()
+  const verCostos = tiene('ver_costos')
+  const MAXD = tiene('dar_descuentos') ? Number(perfil?.descuento_max ?? 0) : 0
+  const puedeCrear = tiene('crear_productos')
+  const verOtras = tiene('ver_otras_sucursales')
+  const puedeCredito = tiene('autorizar_credito')
+  const puedeCobrarOtras = tiene('cobrar_cot_otra_sucursal')
+  const nomSuc = id => sucursales.find(s => s.id === id)?.nombre || ''
+  const [cotTodas, setCotTodas] = useState(false)
+  const [avisoDesc, setAvisoDesc] = useState('')
+  const topeDesc = () => {
+    setAvisoDesc(MAXD > 0 ? `Tu descuento máximo es ${MAXD}%` : 'Tu rol no puede dar descuentos')
+    setTimeout(() => setAvisoDesc(''), 3500)
+  }
   const [totalEditable, setTotalEditable]     = useState(false)
   const [metodoPago, setMetodoPago]           = useState(() => localStorage.getItem('pos_metodo_pago') || 'efectivo')
+  useEffect(() => { if (!puedeCredito && metodoPago === 'credito') setMetodoPago('efectivo') }, [puedeCredito, metodoPago])
   const [pagoDividido, setPagoDividido]       = useState(() => {
     try { return JSON.parse(localStorage.getItem('pos_pago_dividido') || 'false') } catch { return false }
   })
@@ -119,11 +137,11 @@ useEffect(() => {
     if (!mostrarCotiz) return
     const timer = setTimeout(async () => {
       setCargandoCotiz(true)
-      try { setCotizLista(await buscarCotizaciones({ q: qCotiz, estado: 'vigentes', limite: 12 })) } catch { setCotizLista([]) }
+      try { setCotizLista(await buscarCotizaciones({ q: qCotiz, estado: 'vigentes', limite: 12, sucursal: puedeCobrarOtras && cotTodas ? 'todas' : getSucursalId() })) } catch { setCotizLista([]) }
       setCargandoCotiz(false)
     }, 250)
     return () => clearTimeout(timer)
-  }, [mostrarCotiz, qCotiz])
+  }, [mostrarCotiz, qCotiz, cotTodas])
 
   const abrirCotizacion = async (c) => {
     try {
@@ -255,7 +273,8 @@ useEffect(() => {
   }
 
   const actualizarDescuento = (id, descuento) => {
-    setCarrito(prev => prev.map(i => i.id === id ? { ...i, descuento: Math.min(descuento, 100) } : i))
+    if (descuento > MAXD) { topeDesc(); descuento = MAXD }
+    setCarrito(prev => prev.map(i => i.id === id ? { ...i, descuento } : i))
   }
 
   const abrirCrearContacto = () => {
@@ -301,6 +320,7 @@ useEffect(() => {
   }
 
   const abrirProductoNuevo = () => {
+    if (!puedeCrear) return
     setProdNuevo({ nombre: busqueda.trim(), precio: '', costo: '', existencia: '', peso: '' })
     setProdNuevoError('')
     setMostrarProdNuevo(true)
@@ -615,11 +635,11 @@ useEffect(() => {
               background: mostrarFlete ? '#1a1a2e' : '#0C447C',
               color: 'white', border: 'none', cursor: 'pointer'
             }}>🚚 + Flete/Servicio</button>
-            <button onClick={abrirProductoNuevo} style={{
+            {puedeCrear && <button onClick={abrirProductoNuevo} style={{
               padding: '6px 14px', borderRadius: '6px', fontSize: '13px', fontWeight: '600',
               background: mostrarProdNuevo ? '#1a1a2e' : '#166534',
               color: 'white', border: 'none', cursor: 'pointer'
-            }}>➕ Producto nuevo</button>
+            }}>➕ Producto nuevo</button>}
           </div>
 
           {/* Alta rápida de producto fuera de catálogo */}
@@ -660,7 +680,7 @@ useEffect(() => {
                       onChange={e => setProdNuevo(p => ({ ...p, peso: e.target.value }))} style={inp} />
                   </div>
                 </div>
-                {margen !== null && (
+                {verCostos && margen !== null && (
                   <p style={{ margin: '0 0 8px', fontSize: '12px', fontWeight: '600', color: margen < 0 ? '#e53e3e' : margen < 10 ? '#BA7517' : '#166534' }}>
                     Margen: {margen.toFixed(1)}% · Utilidad {fmt(pv - co)} por unidad
                   </p>
@@ -714,13 +734,18 @@ useEffect(() => {
               <input autoFocus value={qCotiz} onChange={e => setQCotiz(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') setMostrarCotiz(false) }}
                 placeholder="Buscar por folio o cliente..."
                 style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', boxSizing: 'border-box', marginBottom: '8px' }} />
+              {puedeCobrarOtras && sucursales.length > 1 && (
+                <label style={{ display: 'block', fontSize: '12px', color: '#555', marginBottom: '8px' }}>
+                  <input type="checkbox" checked={cotTodas} onChange={e => setCotTodas(e.target.checked)} /> Incluir cotizaciones de otras sucursales
+                </label>
+              )}
               {cargandoCotiz && <p style={{ margin: 0, fontSize: '12px', color: '#888' }}>Buscando...</p>}
               {!cargandoCotiz && cotizLista.length === 0 && <p style={{ margin: 0, fontSize: '13px', color: '#aaa' }}>No hay cotizaciones vigentes</p>}
               {cotizLista.map(c => (
                 <div key={c.id} onClick={() => abrirCotizacion(c)}
                   style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', borderRadius: '6px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', fontSize: '13px' }}
                   onMouseEnter={e => e.currentTarget.style.background = '#fff7ed'} onMouseLeave={e => e.currentTarget.style.background = 'white'}>
-                  <span><b>{c.folio}</b> · {c.nombre_cliente || 'Público en general'}{c.es_envio ? ' 🚚' : ''}</span>
+                  <span><b>{c.folio}</b>{c.sucursal_id !== getSucursalId() && <span style={{ marginLeft: '6px', fontSize: '11px', fontWeight: '600', color: '#0C447C', background: '#e8f1fb', padding: '1px 7px', borderRadius: '10px' }}>{nomSuc(c.sucursal_id)}</span>} · {c.nombre_cliente || 'Público en general'}{c.es_envio ? ' 🚚' : ''}</span>
                   <b style={{ color: '#f97316' }}>{fmt(c.total)}</b>
                 </div>
               ))}
@@ -769,11 +794,12 @@ useEffect(() => {
                   <div>
                     <p style={{ margin: 0, fontSize: '14px', fontWeight: '600', color: '#1a1a2e' }}>{p.nombre}</p>
                     <p style={{ margin: 0, fontSize: '12px', color: '#888' }}>{p.clave}{p.codigo_barras ? ` · ${p.codigo_barras}` : ''}</p>
+                    <p style={{ margin: 0, fontSize: '12px', color: '#0C447C' }}>{textoExistencias(p, sucursales, getSucursalId(), verOtras)}</p>
                   </div>
                   <p style={{ margin: 0, fontSize: '15px', fontWeight: '700', color: '#f97316' }}>{fmt(Math.round(p.precio_venta * 1.16 * 100) / 100)}</p>
                 </div>
               ))}
-              {!buscando && busqueda.trim() && (
+              {puedeCrear && !buscando && busqueda.trim() && (
                 <div onClick={abrirProductoNuevo}
                   style={{ padding: '10px 1rem', cursor: 'pointer', background: '#f0fdf4', color: '#166534', fontSize: '13px', fontWeight: '600', borderRadius: '0 0 8px 8px' }}>
                   {resultados.length === 0 ? 'Sin resultados — ' : ''}➕ Crear producto nuevo «{busqueda.trim()}»
@@ -823,7 +849,7 @@ useEffect(() => {
                         const costoUnit   = item.costo / (item.factor || 1)
                         const precioFinal = item.precio * (1 - item.descuento / 100)
                         const margen      = precioFinal > 0 ? (precioFinal - costoUnit) / precioFinal * 100 : 0
-                      const margenStyle = margen < 0
+                      const margenStyle = !verCostos ? {} : margen < 0
                       ? { background: '#ffe4e4', borderLeft: '4px solid #e53e3e' }
                       : margen < 10
                       ? { background: '#fef3c7', borderLeft: '4px solid #BA7517' }
@@ -1109,9 +1135,10 @@ useEffect(() => {
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px' }}>
               <span style={{ color: '#888' }}>Descuento global %</span>
-              <input type="number" min="0" max="100" step="1" value={descuentoGlobal}
+              <input type="number" min="0" max={MAXD} step="1" value={descuentoGlobal} disabled={MAXD === 0}
                 onChange={e => {
-                  const val = parseFloat(e.target.value) || 0
+                  let val = parseFloat(e.target.value) || 0
+                  if (val > MAXD) { topeDesc(); val = MAXD }
                   setDescuentoGlobal(val)
                   setCarrito(prev => prev.map(i => ({ ...i, descuento: val })))
                 }}
@@ -1122,6 +1149,7 @@ useEffect(() => {
                 style={{ width: '60px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '13px' }}
               />
             </div>
+            {avisoDesc && <div style={{ fontSize: '12px', fontWeight: '700', color: '#b91c1c', background: '#fdecec', padding: '5px 8px', borderRadius: '6px' }}>{avisoDesc}</div>}
             {descuentoTotal > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#e53e3e' }}>
                 <span>Descuento</span>
@@ -1146,11 +1174,12 @@ useEffect(() => {
                   setTotalEditable(false)
                   const val = parseFloat(e.target.value.replace(/[$,]/g, ''))
                   if (!isNaN(val) && val > 0 && Math.abs(val - total) > 0.005 && subtotalBruto > 0) {
-                    const nuevoDesc = Math.max(0, Math.min(100, (1 - val / subtotalBruto) * 100))
-                    const pct = Math.round(nuevoDesc * 10000) / 10000
+                    const pedido = Math.max(0, (1 - val / subtotalBruto) * 100)
+                    if (pedido > MAXD) topeDesc()
+                    const pct = Math.round(Math.min(MAXD, pedido) * 10000) / 10000
                     setDescuentoGlobal(pct)
                     setCarrito(prev => prev.map(i => ({ ...i, descuento: pct })))
-                    e.target.value = val.toFixed(2)
+                    e.target.value = (pedido > MAXD ? subtotalBruto * (1 - pct / 100) : val).toFixed(2)
                   } else {
                     e.target.value = total.toFixed(2)
                   }
@@ -1192,7 +1221,7 @@ useEffect(() => {
                   { id: 'efectivo',      label: '💵 Efectivo' },
                   { id: 'tarjeta',       label: '💳 Tarjeta' },
                   { id: 'transferencia', label: '🏦 Transf.' },
-                  { id: 'credito',       label: '📋 Crédito' },
+                  ...(puedeCredito ? [{ id: 'credito',       label: '📋 Crédito' }] : []),
                   ...(cliente && Number(cliente.saldo_a_favor) > 0 ? [{ id: 'saldo_a_favor', label: '💰 Saldo a favor' }] : []),
                 ].map(m => (
                   <button key={m.id} onClick={() => setMetodoPago(m.id)} style={{
@@ -1238,7 +1267,7 @@ useEffect(() => {
                     <option value="efectivo">💵 Efectivo</option>
                     <option value="tarjeta">💳 Tarjeta</option>
                     <option value="transferencia">🏦 Transf.</option>
-                    <option value="credito">📋 Crédito</option>
+                    {puedeCredito && <option value="credito">📋 Crédito</option>}
                     {cliente && Number(cliente.saldo_a_favor) > 0 && <option value="saldo_a_favor">💰 Saldo a favor</option>}
                   </select>
                   <input type="number" placeholder="Monto" value={p.monto}
@@ -1295,7 +1324,9 @@ useEffect(() => {
 }
 
 function TicketVenta({ venta, onNueva }) {
+  const { sucursales } = useSesion()
   const datosTicket = () => ({
+    sucursalLinea: sucursales.find(s => s.id === getSucursalId())?.nombre || '',
     folio: venta.folio,
     fecha: new Date().toLocaleString('es-MX'),
     cliente: venta.cliente ? { nombre: venta.cliente.nombre, rfc: venta.cliente.rfc } : null,

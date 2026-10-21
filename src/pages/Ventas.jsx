@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { useSesion } from '../lib/sesion'
+import { getSucursalId } from '../lib/config'
+import { textoExistencias } from '../lib/existencias'
 import { imprimirTicket } from '../lib/ticket'
 
 const hoy = () => new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0]
@@ -20,6 +23,8 @@ const fmtHora = f => {
   return d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })
 }
 
+const vend = v => v.usuarios?.nombre || v.usuarios?.email?.split('@')[0]
+
 const METODOS = {
   efectivo:      { label: 'Efectivo',      color: '#1D9E75' },
   tarjeta:       { label: 'Tarjeta',       color: '#534AB7' },
@@ -39,28 +44,36 @@ export default function Ventas() {
   const [filaSeleccionada, setFilaSeleccionada] = useState(null)
   const [vista, setVista]               = useState('lista')
   const [ayer, setAyer]                 = useState(null)
+  const { tiene, sucursales }           = useSesion()
+  const verOtras                        = tiene('ver_otras_sucursales')
+  const [sucFiltro, setSucFiltro]       = useState('activa')
+  // 'todas' | id de sucursal
+  const sucActual = verOtras && sucFiltro !== 'activa' ? sucFiltro : getSucursalId()
+  const nomSuc = id => sucursales.find(s => s.id === id)?.nombre || ''
 
   useEffect(() => {
     cargarVentas()
     cargarAyer()
-  }, [])
+  }, [sucFiltro])
 
   async function cargarVentas(d = desde, h = hasta) {
     setCargando(true)
     setVentas([])
-    const { data, error } = await supabase
+    let q = supabase
       .from('ventas')
       .select(`
-        id, folio, total, subtotal, descuento, recargo, estado, created_at,
+        id, folio, total, subtotal, descuento, recargo, estado, created_at, sucursal_id,
         direccion_entrega,
         contactos(id, nombre, telefono, colonia, direccion),
         clientes(id, nombre, rfc, telefono, direccion),
-        usuarios(email),
+        usuarios(nombre, email),
         pagos(metodo, monto)
       `)
       .gte('created_at', new Date(`${d}T00:00:00`).toISOString())
       .lte('created_at', new Date(`${h}T23:59:59`).toISOString())
       .order('created_at', { ascending: false })
+    if (sucActual !== 'todas') q = q.eq('sucursal_id', sucActual)
+    const { data, error } = await q
     if (!error && data) setVentas(data)
     setCargando(false)
   }
@@ -69,11 +82,13 @@ export default function Ventas() {
     const d = new Date()
     d.setDate(d.getDate() - 1)
     const fecha = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().split('T')[0]
-    const { data } = await supabase
+    let q = supabase
       .from('ventas')
       .select('total, estado')
       .gte('created_at', new Date(`${fecha}T00:00:00`).toISOString())
       .lte('created_at', new Date(`${fecha}T23:59:59`).toISOString())
+    if (sucActual !== 'todas') q = q.eq('sucursal_id', sucActual)
+    const { data } = await q
     if (data) {
       const completadas = data.filter(v => v.estado === 'completada')
       setAyer(completadas.reduce((s, v) => s + Number(v.total), 0))
@@ -107,7 +122,8 @@ export default function Ventas() {
       v.folio?.toLowerCase().includes(q) ||
       v.contactos?.nombre?.toLowerCase().includes(q) ||
       v.clientes?.nombre?.toLowerCase().includes(q) ||
-      v.usuarios?.email?.toLowerCase().includes(q)
+      v.usuarios?.email?.toLowerCase().includes(q) ||
+      v.usuarios?.nombre?.toLowerCase().includes(q)
     )
   })
 
@@ -146,6 +162,17 @@ export default function Ventas() {
           <input type="date" value={hasta} onChange={e => setHasta(e.target.value)}
             style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '14px' }} />
         </div>
+        {verOtras && sucursales.length > 1 && (
+          <div>
+            <label style={{ fontSize: '12px', color: '#666', display: 'block', marginBottom: '4px' }}>Sucursal</label>
+            <select value={sucFiltro} onChange={e => setSucFiltro(e.target.value)}
+              style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '14px' }}>
+              <option value="activa">Esta sucursal</option>
+              <option value="todas">Todas</option>
+              {sucursales.filter(s => s.id !== getSucursalId()).map(s => <option key={s.id} value={s.id}>Solo {s.nombre}</option>)}
+            </select>
+          </div>
+        )}
         <button onClick={consultar} style={{ padding: '8px 20px', background: '#f97316', color: 'white', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: '600', cursor: 'pointer' }}>Consultar</button>
         <button onClick={setHoyFecha} style={{ padding: '8px 14px', background: 'white', color: '#333', border: '1px solid #ddd', borderRadius: '6px', fontSize: '13px', cursor: 'pointer' }}>Hoy</button>
         <button onClick={setAyerFecha} style={{ padding: '8px 14px', background: 'white', color: '#333', border: '1px solid #ddd', borderRadius: '6px', fontSize: '13px', cursor: 'pointer' }}>Ayer</button>
@@ -226,11 +253,11 @@ export default function Ventas() {
                       background: filaSeleccionada === v.id ? '#fff7ed' : 'white',
                       borderLeft: filaSeleccionada === v.id ? '3px solid #f97316' : '3px solid transparent',
                     }}>
-                    <td style={{ ...td, fontWeight: '600', color: '#534AB7' }}>{v.folio}</td>
+                    <td style={{ ...td, fontWeight: '600', color: '#534AB7' }}>{v.folio}{v.sucursal_id !== getSucursalId() && <span style={{ marginLeft: '6px', fontSize: '11px', fontWeight: '600', color: '#0C447C', background: '#e8f1fb', padding: '1px 7px', borderRadius: '10px' }}>{nomSuc(v.sucursal_id)}</span>}</td>
                     <td style={td}>{fmtFecha(v.created_at)}</td>
                     <td style={td}>{fmtHora(v.created_at)}</td>
                     <td style={td}>{v.clientes?.nombre || v.contactos?.nombre || <span style={{ color: '#ccc' }}>Mostrador</span>}</td>
-                    <td style={{ ...td, fontSize: '12px', color: '#888' }}>{v.usuarios?.email?.split('@')[0] || '—'}</td>
+                    <td style={{ ...td, fontSize: '12px', color: '#888' }}>{vend(v) || '—'}</td>
                     <td style={{ ...td, textAlign: 'center' }}>
                       {v.pagos?.map((p, i) => (
                         <span key={i} style={{ fontSize: '11px', padding: '2px 6px', borderRadius: '10px', background: `${METODOS[p.metodo]?.color}20`, color: METODOS[p.metodo]?.color, fontWeight: '600', marginRight: '2px' }}>
@@ -315,7 +342,7 @@ export default function Ventas() {
               <tbody>
                 {(() => {
                   const porVendedor = completadas.reduce((acc, v) => {
-                    const email = v.usuarios?.email?.split('@')[0] || 'Sin asignar'
+                    const email = vend(v) || 'Sin asignar'
                     if (!acc[email]) acc[email] = { tickets: 0, total: 0, descuento: 0 }
                     acc[email].tickets++
                     acc[email].total     += Number(v.total)
@@ -339,12 +366,12 @@ export default function Ventas() {
       )}
 
       {/* Vista por artículo */}
-      {vista === 'articulo' && <PorArticulo desde={desde} hasta={hasta} />}
+      {vista === 'articulo' && <PorArticulo desde={desde} hasta={hasta} sucursal={sucActual} />}
     </div>
   )
 }
 
-function PorArticulo({ desde, hasta }) {
+function PorArticulo({ desde, hasta, sucursal }) {
   const [busqueda, setBusqueda]     = useState('')
   const [resultados, setResultados] = useState([])
   const [buscando, setBuscando]     = useState(false)
@@ -354,17 +381,19 @@ function PorArticulo({ desde, hasta }) {
     const timer = setTimeout(async () => {
       if (!busqueda.trim()) { setResultados([]); setResumen(null); return }
       setBuscando(true)
-      const { data } = await supabase
+      let q = supabase
         .from('venta_items')
         .select(`
           nombre_producto, cantidad, subtotal, precio_unitario,
-          ventas!inner(created_at, estado, folio)
+          ventas!inner(created_at, estado, folio, sucursal_id)
         `)
         .ilike('nombre_producto', `%${busqueda}%`)
         .eq('ventas.estado', 'completada')
         .gte('ventas.created_at', new Date(`${desde}T00:00:00`).toISOString())
         .lte('ventas.created_at', new Date(`${hasta}T23:59:59`).toISOString())
         .order('nombre_producto')
+      if (sucursal !== 'todas') q = q.eq('ventas.sucursal_id', sucursal)
+      const { data } = await q
 
       if (data) {
         const totalUnidades = data.reduce((s, i) => s + Number(i.cantidad), 0)
@@ -383,7 +412,7 @@ function PorArticulo({ desde, hasta }) {
       setBuscando(false)
     }, 500)
     return () => clearTimeout(timer)
-  }, [busqueda, desde, hasta])
+  }, [busqueda, desde, hasta, sucursal])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -502,6 +531,14 @@ function DetalleVenta({ venta, onVolver }) {
   const [contactoActual, setContactoActual]   = useState(venta.contactos)
   const [dirActual, setDirActual]             = useState(venta.direccion_entrega)
   const [error, setError]                     = useState(null)
+  const { tiene }                             = useSesion()
+  const propia = venta.sucursal_id === getSucursalId()
+  const puedeCancelar = venta.estado === 'completada' && tiene('cancelar_ventas') && (propia || tiene('cambiar_sucursal'))
+  const [sucDet, setSucDet] = useState(null)
+
+  useEffect(() => {
+    supabase.from('sucursales').select('nombre, direccion, colonia, telefono').eq('id', venta.sucursal_id).maybeSingle().then(({ data }) => setSucDet(data))
+  }, [venta.sucursal_id])
 
   useEffect(() => {
     async function cargar() {
@@ -556,6 +593,7 @@ function DetalleVenta({ venta, onVolver }) {
 
   const reimprimir = () => {
     imprimirTicket({
+      sucursalLinea: sucDet ? [sucDet.nombre, sucDet.direccion, sucDet.colonia, sucDet.telefono && 'Tel. ' + sucDet.telefono].filter(Boolean).join(' · ') : '',
       folio: venta.folio,
       fecha: new Date(venta.created_at).toLocaleString('es-MX'),
       cliente: venta.clientes ? { nombre: venta.clientes.nombre, rfc: venta.clientes.rfc } : null,
@@ -581,10 +619,10 @@ function DetalleVenta({ venta, onVolver }) {
           ← Volver
         </button>
         <div style={{ display: 'flex', gap: '8px' }}>
-          <button onClick={reimprimir} style={{ padding: '8px 16px', background: '#1a1a2e', color: 'white', border: 'none', borderRadius: '8px', fontSize: '13px', cursor: 'pointer' }}>
+          {tiene('reimprimir') && <button onClick={reimprimir} style={{ padding: '8px 16px', background: '#1a1a2e', color: 'white', border: 'none', borderRadius: '8px', fontSize: '13px', cursor: 'pointer' }}>
             🖨️ Reimprimir
-          </button>
-          {venta.estado === 'completada' && !confirmando && (
+          </button>}
+          {puedeCancelar && !confirmando && (
             <button onClick={() => setConfirmando(true)} style={{ padding: '8px 16px', background: '#fef2f2', color: '#e53e3e', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', cursor: 'pointer' }}>
               ✕ Cancelar venta
             </button>
@@ -650,7 +688,8 @@ function DetalleVenta({ venta, onVolver }) {
               <FilaInfo label="Folio" valor={venta.folio} />
               <FilaInfo label="Fecha" valor={fmtFecha(venta.created_at)} />
               <FilaInfo label="Hora" valor={fmtHora(venta.created_at)} />
-              <FilaInfo label="Vendedor" valor={venta.usuarios?.email?.split('@')[0] || '—'} />
+              <FilaInfo label="Sucursal" valor={sucDet?.nombre || '—'} />
+              <FilaInfo label="Vendedor" valor={vend(venta) || '—'} />
               <FilaInfo label="Cliente" valor={venta.clientes?.nombre || 'Sin cliente'} />
               <FilaInfo label="Entrega" valor={contactoActual?.nombre || 'Mostrador'} />
               {contactoActual?.telefono && <FilaInfo label="Teléfono" valor={contactoActual.telefono} />}

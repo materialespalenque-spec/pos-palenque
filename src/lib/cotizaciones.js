@@ -166,11 +166,13 @@ export async function cancelarCotizacion(id) {
 }
 
 /** Lista para la pantalla de Cotizaciones y para el selector de Caja. */
-export async function buscarCotizaciones({ q = '', estado = 'vigentes', limite = 60 } = {}) {
+export async function buscarCotizaciones({ q = '', estado = 'vigentes', limite = 60, sucursal } = {}) {
   const hoy = hoyISO()
   let query = supabase.from('cotizaciones')
-    .select('id, folio, estado, nombre_cliente, total, peso_total, vigente_hasta, created_at, es_envio, notas')
+    .select('id, folio, estado, sucursal_id, nombre_cliente, total, peso_total, vigente_hasta, created_at, es_envio, notas')
     .order('created_at', { ascending: false }).limit(limite)
+  // sucursal: 'todas' | id de sucursal | (vacío = la activa)
+  if (sucursal !== 'todas') query = query.eq('sucursal_id', sucursal || getSucursalId())
   if (estado === 'vigentes')        query = query.eq('estado', 'vigente').gte('vigente_hasta', hoy)
   else if (estado === 'vencidas')   query = query.eq('estado', 'vigente').lt('vigente_hasta', hoy)
   else if (estado === 'convertidas') query = query.eq('estado', 'convertida')

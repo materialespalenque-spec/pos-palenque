@@ -42,7 +42,7 @@ export function generarTicketHTML(datos) {
     </style></head><body>
     <div class="center">
       <div class="bold" style="font-size:14px">MATERIALES PALENQUE</div>
-      <div>Palenque, Chiapas</div>
+      <div>${datos.sucursalLinea || 'Palenque, Chiapas'}</div>
       <div style="font-size:11px;color:#888">${fecha}</div>
     </div>
     <hr>

@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { useSesion } from '../lib/sesion'
+import { getSucursalId } from '../lib/config'
+import { textoExistencias } from '../lib/existencias'
 
 const fmt = n => new Intl.NumberFormat('es-MX', {
   style: 'currency', currency: 'MXN'
@@ -12,6 +15,9 @@ export default function Productos() {
   const [pagina, setPagina]       = useState(0)
   const [mostrarUbicaciones, setMostrarUbicaciones] = useState(false)
   const POR_PAGINA = 50
+  const { tiene, sucursales } = useSesion()
+  const verCostos = tiene('ver_costos')
+  const verOtras = tiene('ver_otras_sucursales')
 
   useEffect(() => {
     cargar()
@@ -21,7 +27,7 @@ async function cargar() {
   setCargando(true)
   let query = supabase
     .from('productos')
-    .select('id, nombre, codigo_barras, clave, precio_venta, costo, factor, activo, sicar_id')
+    .select('id, nombre, codigo_barras, clave, precio_venta, costo, factor, activo, sicar_id, inventario(existencia, sucursal_id)')
     .order('nombre', { ascending: true })
     .range(pagina * POR_PAGINA, (pagina + 1) * POR_PAGINA - 1)
 
@@ -66,10 +72,10 @@ if (busqueda.trim()) {
             borderRadius: '8px', cursor: 'pointer', fontSize: '14px'
           }}>✕ Limpiar</button>
         )}
-        <button onClick={() => setMostrarUbicaciones(true)} style={{
+        {tiene('editar_productos') && <button onClick={() => setMostrarUbicaciones(true)} style={{
           padding: '10px 16px', background: 'white', border: '1px solid #ddd',
           borderRadius: '8px', cursor: 'pointer', fontSize: '13px', whiteSpace: 'nowrap'
-        }}>📍 Ubicación</button>
+        }}>📍 Ubicación</button>}
       </div>
 
       {/* Tabla */}
@@ -88,16 +94,17 @@ if (busqueda.trim()) {
               <th style={th}>Clave</th>
               <th style={th}>Clave Alterna</th>
               <th style={{ ...th, textAlign: 'right' }}>Precio Venta</th>
-              <th style={{ ...th, textAlign: 'right' }}>Costo</th>
+              <th style={th}>Existencia</th>
+              {verCostos && <th style={{ ...th, textAlign: 'right' }}>Costo</th>}
               <th style={{ ...th, textAlign: 'right' }}>Factor</th>
-              <th style={{ ...th, textAlign: 'right' }}>Margen</th>
+              {verCostos && <th style={{ ...th, textAlign: 'right' }}>Margen</th>}
             </tr>
           </thead>
           <tbody>
             {cargando ? (
-              <tr><td colSpan={7} style={{ ...td, textAlign: 'center', color: '#888', padding: '2rem' }}>Cargando productos...</td></tr>
+              <tr><td colSpan={8} style={{ ...td, textAlign: 'center', color: '#888', padding: '2rem' }}>Cargando productos...</td></tr>
             ) : productos.length === 0 ? (
-              <tr><td colSpan={7} style={{ ...td, textAlign: 'center', color: '#888', padding: '2rem' }}>No se encontraron productos</td></tr>
+              <tr><td colSpan={8} style={{ ...td, textAlign: 'center', color: '#888', padding: '2rem' }}>No se encontraron productos</td></tr>
             ) : (
               productos.map(p => {
                 const costoUnit   = (p.factor > 1 ? p.costo / p.factor : p.costo) * 1.16
@@ -111,11 +118,12 @@ if (busqueda.trim()) {
                     <td style={{ ...td, color: '#888', fontSize: '12px' }}>{p.clave || '—'}</td>
                     <td style={{ ...td, color: '#888', fontSize: '12px' }}>{p.codigo_barras || '—'}</td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: '600', color: '#f97316' }}>{fmt(precioVenta)}</td>
-                    <td style={{ ...td, textAlign: 'right', color: '#888' }}>{fmt(costoUnit)}</td>
+                    <td style={{ ...td, fontSize: '12px', color: '#0C447C', whiteSpace: 'nowrap' }}>{textoExistencias(p, sucursales, getSucursalId(), verOtras)}</td>
+                    {verCostos && <td style={{ ...td, textAlign: 'right', color: '#888' }}>{fmt(costoUnit)}</td>}
                     <td style={{ ...td, textAlign: 'right', color: '#888' }}>{p.factor > 1 ? `x${p.factor}` : '—'}</td>
-                    <td style={{ ...td, textAlign: 'right', color: margen >= 0 ? '#1D9E75' : '#e53e3e', fontWeight: '600' }}>
+                    {verCostos && <td style={{ ...td, textAlign: 'right', color: margen >= 0 ? '#1D9E75' : '#e53e3e', fontWeight: '600' }}>
                       {margen.toFixed(1)}%
-                    </td>
+                    </td>}
                   </tr>
                 )
               })
