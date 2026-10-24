@@ -12,11 +12,12 @@ import Reportes from './pages/Reportes'
 import Ventas from './pages/Ventas'
 import Cotizaciones from './pages/Cotizaciones'
 import Configuracion from './pages/Configuracion'
+import Cargas from './pages/Cargas'
 
 // Qué permiso de vista necesita cada pantalla (el orden es el de preferencia al entrar)
 const PERMISO_PAGINA = {
   caja: 'v_caja', cotizaciones: 'v_cotizaciones', ventas: 'v_ventas', productos: 'v_productos',
-  contactos: 'v_entregas', clientes: 'v_clientes', reportes: 'v_reportes', configuracion: 'v_configuracion',
+  contactos: 'v_entregas', clientes: 'v_clientes', reportes: 'v_reportes', cargas: 'v_cargas', configuracion: 'v_configuracion',
 }
 
 function App() {
@@ -99,6 +100,7 @@ function App() {
     reportes:      <Reportes />,
     ventas:        <Ventas />,
     cotizaciones:  <Cotizaciones irA={setPagina} />,
+    cargas:        <Cargas />,
     configuracion: <Configuracion />,
   }
 

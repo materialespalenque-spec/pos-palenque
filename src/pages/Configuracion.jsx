@@ -19,7 +19,7 @@ const TABS = [
 
 const VISTAS = [
   ['v_caja', 'Caja'], ['v_cotizaciones', 'Cotizaciones'], ['v_ventas', 'Ventas'], ['v_productos', 'Productos'],
-  ['v_entregas', 'Entregas'], ['v_clientes', 'Clientes'], ['v_reportes', 'Reportes'], ['v_configuracion', 'Configuración'],
+  ['v_entregas', 'Entregas'], ['v_clientes', 'Clientes'], ['v_reportes', 'Reportes'], ['v_cargas', 'Cargas de archivos'], ['v_configuracion', 'Configuración'],
 ]
 // [clave, etiqueta, ya_funciona]
 const ACCIONES = [

@@ -10,6 +10,7 @@ const menu = [
   { id: 'contactos',     label: 'Entregas',      icono: '📍', permiso: 'v_entregas' },
   { id: 'clientes',      label: 'Clientes',      icono: '👥', permiso: 'v_clientes' },
   { id: 'reportes',      label: 'Reportes',      icono: '📊', permiso: 'v_reportes' },
+  { id: 'cargas',        label: 'Cargas',        icono: '📥', permiso: 'v_cargas' },
   { id: 'configuracion', label: 'Configuración', icono: '⚙️', permiso: 'v_configuracion' },
 ]
 
