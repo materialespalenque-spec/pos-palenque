@@ -181,7 +181,7 @@ export async function aplicarCambios(r, excel, { sucursalId, nombreArchivo, prog
     const registros = lote.map(x => ({
       negocio_id: NEGOCIO_ID, nombre: x.nombre, clave: x.clave, codigo_barras: x.codigo_barras,
       precio_venta: x.precio_venta, costo: x.costo, precio_2: x.precio_2, mayoreo_2: x.mayoreo_2,
-      precio_3: x.precio_3, mayoreo_3: x.mayoreo_3, peso_kg: x.peso_kg || null,
+      precio_3: x.precio_3, mayoreo_3: x.mayoreo_3, peso_kg: x.peso_kg || 0,
       tasa_iva: 0.16, activo: true, factor: 1, clave_sat: '01010101', unidad_sat: 'H87',
     }))
     const { data, error } = await supabase.from('productos').insert(registros).select('id, clave')
