@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 
+// venta_items.costo_unitario se guarda SIN IVA; SICAR reporta las compras CON IVA (igual que las ventas)
+const IVA_COSTO = 1.16
+
 const hoy = () => {
   const d = new Date()
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().split('T')[0]
@@ -119,7 +122,7 @@ export default function Reportes() {
     const ventas_sicar = data.reduce((s, m) => s + Number(m.ventas || 0), 0)
     const costo_sicar  = data.reduce((s, m) => s + Number(m.costo || 0), 0)
     const ventas_live  = (ventasLive || []).reduce((s, v) => s + Number(v.total || 0), 0)
-    const costo_live   = (itemsLive || []).reduce((s, it) => s + Number(it.costo_unitario || 0) * Number(it.cantidad || 0), 0)
+    const costo_live   = (itemsLive || []).reduce((s, it) => s + Number(it.costo_unitario || 0) * Number(it.cantidad || 0) * IVA_COSTO, 0)
     const ventas_total = ventas_sicar + ventas_live
     const costo_total  = costo_sicar + costo_live
     const utilidad     = ventas_total - costo_total
@@ -202,7 +205,7 @@ export default function Reportes() {
     let ventas   = (util || []).reduce((s, d) => s + Number(d.ventas || 0), 0)
     let compras  = (util || []).reduce((s, d) => s + Number(d.compras || 0), 0)
     ventas  += ventasLive.reduce((s, v) => s + Number(v.total || 0), 0)
-    compras += itemsLive.reduce((s, it) => s + Number(it.costo_unitario || 0) * Number(it.cantidad || 0), 0)
+    compras += itemsLive.reduce((s, it) => s + Number(it.costo_unitario || 0) * Number(it.cantidad || 0) * IVA_COSTO, 0)
     const utilidad = ventas - compras
     const margen   = ventas > 0 ? (utilidad / ventas * 100) : 0
     setTotalHistorico({ ventas, compras, utilidad, margen })
@@ -515,7 +518,7 @@ function EstadoResultados({ desde, hasta }) {
       ;(itemsLive || []).forEach(it => {
         const mes = mesLocal(it.ventas.created_at)
         if (!mapa[mes]) mapa[mes] = { ventas: 0, costo: 0 }
-        mapa[mes].costo += Number(it.costo_unitario || 0) * Number(it.cantidad || 0)
+        mapa[mes].costo += Number(it.costo_unitario || 0) * Number(it.cantidad || 0) * IVA_COSTO
       })
 
       const meses = Object.entries(mapa)
@@ -633,7 +636,7 @@ function ComparativoAnual() {
       itemsLive.forEach(it => {
         const año = añoLocal(it.ventas.created_at)
         asegurar(año)
-        porAño[año].compras += Number(it.costo_unitario || 0) * Number(it.cantidad || 0)
+        porAño[año].compras += Number(it.costo_unitario || 0) * Number(it.cantidad || 0) * IVA_COSTO
       })
       canceladasLive.forEach(v => {
         const año = añoLocal(v.created_at)
